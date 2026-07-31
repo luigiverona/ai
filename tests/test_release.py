@@ -19,6 +19,7 @@ from tools.build_installer import (
     build_installer,
     render_installer,
     validate_installer,
+    validate_network_checksum_policy,
     validate_template,
 )
 from tools.build_release import (
@@ -191,6 +192,34 @@ class ReleaseToolTests(unittest.TestCase):
                     validate_installer(
                         installer.replace(GITHUB_RELEASE_BASE, forbidden), "1.0.0", digest
                     )
+
+    def test_network_checksum_policy_allows_local_hashing_and_release_assets(self) -> None:
+        for content in (
+            "digest = hashlib.sha256(data).hexdigest()\n",
+            "digest = local_hasher.sha256().hexdigest()\n",
+            'printf \'%s  %s\\n\' "$EXPECTED_SHA256" "$archive" | sha256sum -c -\n',
+            "assets=(ai-1.0.0.tar.gz.sha256 SHA256SUMS)\n",
+            'archive_url="https://example.test/ai-1.0.0.tar.gz"\ncurl "$archive_url"\n',
+        ):
+            with self.subTest(content=content):
+                validate_network_checksum_policy(content)
+
+    def test_network_checksum_policy_rejects_remote_sidecars(self) -> None:
+        fixtures = (
+            "curl https://example.test/ai-1.0.0.tar.gz.sha256\n",
+            "curl https://example.test/SHA256SUMS\n",
+            "curl https://github.com/luigiverona/ai/releases/download/v1.0.0/ai-1.0.0.tar.gz.sha256\n",
+            "curl https://github.com/luigiverona/ai/releases/download/v1.0.0/SHA256SUMS\n",
+            'archive_url="https://example.test/ai-1.0.0.tar.gz"\n'
+            'sidecar_url="${archive_url}.sha256"\n'
+            'curl -o checksum "$sidecar_url"\n',
+        )
+        for content in fixtures:
+            with (
+                self.subTest(content=content),
+                self.assertRaisesRegex(ValueError, "remote checksum metadata"),
+            ):
+                validate_network_checksum_policy(content)
 
     def test_site_uses_release_installer_and_contains_only_distribution_surface(self) -> None:
         root = Path.cwd()

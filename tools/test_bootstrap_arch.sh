@@ -17,10 +17,14 @@ curl -fsSL --proto '=https' "${RELEASE_BASE}/${TAG}/ai-${VERSION}.tar.gz" -o "${
 expected_sha256="$(sed -n 's/^readonly EXPECTED_SHA256="\([0-9a-f]\{64\}\)"$/\1/p' "${INSTALLER}")"
 [[ ${expected_sha256} =~ ^[0-9a-f]{64}$ ]] || { printf 'invalid embedded SHA-256\n' >&2; exit 1; }
 printf '%s  %s\n' "${expected_sha256}" "${ARCHIVE}" | sha256sum -c -
-if grep -Fq '.sha256' "${INSTALLER}"; then
-  printf 'installer contains a network checksum fallback\n' >&2
-  exit 1
-fi
+python - "${INSTALLER}" "${VERSION}" "${expected_sha256}" <<'PY'
+import pathlib
+import sys
+
+from tools.build_installer import validate_installer
+
+validate_installer(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"), sys.argv[2], sys.argv[3])
+PY
 bash -n "${INSTALLER}"
 shellcheck "${INSTALLER}"
 

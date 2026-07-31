@@ -19,6 +19,14 @@ DIGEST_TOKEN = IDENTITY.digest_token  # noqa: S105 - deterministic template mark
 VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
 UNRESOLVED_PATTERN = re.compile(r"@[A-Z0-9_]+@")
+ASSIGNMENT_PATTERN = re.compile(r"(?m)^[ \t]*(?:readonly[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+NETWORK_COMMAND_PATTERN = re.compile(
+    r"(?m)^[ \t]*(?:if[ \t]+![ \t]+)?(?:curl|wget)\b[^\n]*(?:\\\n[^\n]*)*"
+)
+VARIABLE_PATTERN = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)[^}]*\}|([A-Za-z_][A-Za-z0-9_]*))")
+REMOTE_CHECKSUM_PATTERN = re.compile(
+    r"(?i)\.sha256(?:[?#\s\"']|$)|(?:^|/)SHA256SUMS(?:[?#\s\"']|$)"
+)
 GITHUB_RELEASE_BASE = (
     f'readonly RELEASE_BASE="${{AI_WORKSTATION_RELEASE_BASE:-{IDENTITY.release_base_url}}}"'
 )
@@ -54,6 +62,34 @@ def validate_template(content: str) -> None:
         raise ValueError(f"installer template has unresolved placeholders: {sorted(unresolved)}")
 
 
+def validate_network_checksum_policy(content: str) -> None:
+    assignments = {match.group(1): match.group(2) for match in ASSIGNMENT_PATTERN.finditer(content)}
+    for command_match in NETWORK_COMMAND_PATTERN.finditer(content):
+        fragments = [command_match.group(0)]
+        pending = {
+            name
+            for match in VARIABLE_PATTERN.finditer(command_match.group(0))
+            if (name := match.group(1) or match.group(2)) is not None
+        }
+        visited: set[str] = set()
+        while pending:
+            name = pending.pop()
+            if name in visited:
+                continue
+            visited.add(name)
+            value = assignments.get(name)
+            if value is None:
+                continue
+            fragments.append(value)
+            pending.update(
+                referenced
+                for match in VARIABLE_PATTERN.finditer(value)
+                if (referenced := match.group(1) or match.group(2)) is not None
+            )
+        if REMOTE_CHECKSUM_PATTERN.search("\n".join(fragments)):
+            raise ValueError("generated installer must not retrieve remote checksum metadata")
+
+
 def validate_installer(content: str, version: str, archive_digest: str) -> None:
     if not VERSION_PATTERN.fullmatch(version):
         raise ValueError("installer version must be semantic X.Y.Z")
@@ -73,8 +109,7 @@ def validate_installer(content: str, version: str, archive_digest: str) -> None:
         raise ValueError("generated installer must embed the checksum exactly once")
     if "AI_WORKSTATION_RELEASE_SHA256" in content:
         raise ValueError("generated installer must not permit a checksum override")
-    if re.search(r"curl[^\n]*\.sha256", content):
-        raise ValueError("generated installer must not download a checksum")
+    validate_network_checksum_policy(content)
     if content.count(GITHUB_RELEASE_BASE) != 1:
         raise ValueError("generated installer must contain exactly one GitHub Release base")
     missing_contract = [value for value in INSTALLER_SECURITY_CONTRACT if content.count(value) != 1]
