@@ -33,8 +33,6 @@ def build_site(
         str(assets / archive_name),
         "--project-root",
         str(root),
-        "--checksum",
-        str(assets / f"{archive_name}.sha256"),
         "--sums",
         str(assets / "SHA256SUMS"),
     ]
@@ -50,9 +48,7 @@ def build_site(
     installer = installer_path.read_bytes()
     text = installer.decode("utf-8")
     validate_installer(text, version, archive_digest)
-    release_base = (
-        f'readonly RELEASE_BASE="${{AI_WORKSTATION_RELEASE_BASE:-{IDENTITY.release_base_url}}}"'
-    )
+    release_base = f'readonly RELEASE_BASE="{IDENTITY.release_base_url}"'
     if text.count(release_base) != 1:
         raise ValueError("installer release base is not the intended GitHub Release endpoint")
     if output.exists():

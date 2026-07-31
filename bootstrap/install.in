@@ -3,7 +3,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 readonly AI_WORKSTATION_VERSION="@AI_WORKSTATION_VERSION@"
-readonly RELEASE_BASE="${AI_WORKSTATION_RELEASE_BASE:-https://github.com/luigiverona/ai/releases/download}"
+readonly RELEASE_BASE="https://github.com/luigiverona/ai/releases/download"
 readonly EXPECTED_SHA256="@AI_WORKSTATION_ARCHIVE_SHA256@"
 readonly ROOT_MARKER_NAME=".ai-workstation-installation"
 readonly ROOT_MARKER_CONTENT="ai-workstation installation format 1"
@@ -390,12 +390,6 @@ def fail(reason):
 
 info = journal.lstat()
 observed_uid = info.st_uid
-if (
-    os.environ.get("AI_WORKSTATION_INSTALLER_TESTING") == "1"
-    and os.environ.get("AI_WORKSTATION_INSTALLER_TEST_SENTINEL") == "ai-bootstrap-test-only"
-    and os.environ.get("AI_WORKSTATION_TEST_WRONG_OWNER_JOURNAL") == str(journal)
-):
-    observed_uid = -1
 if not stat.S_ISREG(info.st_mode) or observed_uid != uid or stat.S_IMODE(info.st_mode) != 0o600:
     fail("must be a user-owned regular file with mode 0600")
 
@@ -788,21 +782,6 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-failure_point() {
-  local point="$1"
-  if [[ ${AI_WORKSTATION_INSTALLER_TESTING:-} == 1 &&
-    ${AI_WORKSTATION_INSTALLER_TEST_SENTINEL:-} == "ai-bootstrap-test-only" &&
-    ${AI_WORKSTATION_TEST_PAUSE_POINT:-} == "${point}" ]]; then
-    printf 'ai installer test pause at %s\n' "${point}"
-    while true; do sleep 1; done
-  fi
-  if [[ ${AI_WORKSTATION_INSTALLER_TESTING:-} == 1 &&
-    ${AI_WORKSTATION_INSTALLER_TEST_SENTINEL:-} == "ai-bootstrap-test-only" &&
-    ${AI_WORKSTATION_TEST_FAILURE_POINT:-} == "${point}" ]]; then
-    die "injected failure at ${point}"
-  fi
-}
-
 path_exists() { [[ -e $1 || -L $1 ]]; }
 
 require_owned_regular() {
@@ -837,7 +816,6 @@ launcher_content() {
   cat <<EOF
 #!/bin/sh
 ${LAUNCHER_MARKER}
-export AI_WORKSTATION_CATALOG_ROOT="${install_root}/current"
 export PYTHONPATH="${install_root}/current/src"
 export PYTHONDONTWRITEBYTECODE=1
 exec python -m ai_setup "\$@"
@@ -996,7 +974,6 @@ if path_exists "${current}"; then
 fi
 write_journal prepared
 transaction_started=true
-failure_point after_journal_preparation
 mkdir -m 0700 -- "${staging}"
 fsync_directory "${releases_dir}"
 if ! python - "${archive}" "${staging}" "${target_uid}" <<'PY'
@@ -1049,7 +1026,6 @@ fsync_tree "${staging}" || die "could not durably flush the verified release"
 new_release_digest="$(tree_digest "${staging}")" ||
   die "verified release tree has unsafe content"
 write_journal verified
-failure_point after_verified_extraction
 
 release_matches=false
 if [[ -d ${release_dir} && ! -L ${release_dir} ]]; then
@@ -1161,12 +1137,10 @@ if [[ ${release_matches} == false ]]; then
     fsync_directory "${releases_dir}"
   fi
   write_journal previous_state_preserved
-  failure_point after_preserving_previous_release
   write_journal installing_release
   mv -- "${staging}" "${release_dir}"
   fsync_directory "${releases_dir}"
   write_journal new_release_installed
-  failure_point after_installing_release
 else
   rm -rf -- "${staging}"
   fsync_directory "${releases_dir}"
@@ -1181,12 +1155,10 @@ if [[ ${launcher_had_previous} == true ]]; then
   fsync_file "${launcher_backup}"
   fsync_directory "${launcher_backup%/*}"
 fi
-failure_point before_replacing_launcher
 mv -T -- "${launcher_tmp}" "${launcher}"
 fsync_directory "${launcher%/*}"
 launcher_tmp=""
 write_journal launcher_replaced
-failure_point after_replacing_launcher
 
 if [[ ${shell_needs_change} == true ]]; then
   write_journal replacing_shell
@@ -1197,18 +1169,15 @@ if [[ ${shell_needs_change} == true ]]; then
     fsync_file "${shell_backup}"
     fsync_directory "${shell_backup%/*}"
   fi
-  failure_point before_shell_integration
   mv -T -- "${shell_tmp}" "${path_file}"
   fsync_directory "${path_file%/*}"
   shell_tmp=""
   write_journal shell_integration_replaced
-  failure_point after_shell_integration
 else
   write_journal shell_integration_replaced
 fi
 
 write_journal switching_current
-failure_point before_switching_current
 if [[ ${current_had_previous} == true ]]; then
   [[ ! -e ${current_backup} && ! -L ${current_backup} ]] ||
       die "managed current backup path already exists: ${current_backup}"
@@ -1220,7 +1189,6 @@ rmdir -- "${current_stage}"
 fsync_directory "${install_root}"
 current_stage=""
 write_journal current_switched
-failure_point after_switching_current
 
 # The commit point follows durable validation of every active managed surface.
 [[ -d ${release_dir} && ! -L ${release_dir} &&
@@ -1241,7 +1209,6 @@ fsync_directory "${path_file%/*}"
 fsync_directory "${install_root}"
 write_journal committed
 transaction_committed=true
-failure_point after_recording_committed
 write_journal cleaning
 remove_installer_tree "${staging}" "${releases_dir}" ".${AI_WORKSTATION_VERSION}.new."
 staging=""
@@ -1249,7 +1216,6 @@ if path_exists "${release_backup}"; then
   rm -rf -- "${release_backup}"
   fsync_directory "${releases_dir}"
 fi
-failure_point during_cleanup_after_commit
 if path_exists "${launcher_backup}"; then
   rm -f -- "${launcher_backup}"
   fsync_directory "${launcher_backup%/*}"

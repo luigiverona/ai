@@ -76,7 +76,6 @@ jobs:
           su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/python tools/build_release.py --tag '$RELEASE_TAG'"
           su ai-ci -c "cd /tmp/ai-build-two && python tools/build_release.py --tag '$RELEASE_TAG'"
           cmp /tmp/ai-build-one/dist/ai-*.tar.gz /tmp/ai-build-two/dist/ai-*.tar.gz
-          cmp /tmp/ai-build-one/dist/ai-*.tar.gz.sha256 /tmp/ai-build-two/dist/ai-*.tar.gz.sha256
           cmp /tmp/ai-build-one/dist/SHA256SUMS /tmp/ai-build-two/dist/SHA256SUMS
           cmp /tmp/ai-build-one/dist/install /tmp/ai-build-two/dist/install
           su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/python tools/validate_release.py dist/ai-*.tar.gz"
@@ -134,19 +133,16 @@ jobs:
             --notes-file "docs/releases/$RELEASE_TAG.md" \
             dist/install \
             dist/ai-*.tar.gz \
-            dist/ai-*.tar.gz.sha256 \
             dist/SHA256SUMS
           echo reuse=false >> "$GITHUB_ENV"
       - name: Download and compare uploaded assets
         run: |
           mkdir downloaded
           gh release download "$RELEASE_TAG" --dir downloaded
-          test "$(find downloaded -maxdepth 1 -type f | wc -l)" -eq 4
+          test "$(find downloaded -maxdepth 1 -type f | wc -l)" -eq 3
           for asset in dist/*; do cmp "$asset" "downloaded/$(basename "$asset")"; done
           (cd downloaded && sha256sum --check SHA256SUMS)
-          (cd downloaded && sha256sum --check ai-*.tar.gz.sha256)
           python tools/validate_release.py downloaded/ai-*.tar.gz \
-            --checksum downloaded/ai-*.tar.gz.sha256 \
             --sums downloaded/SHA256SUMS \
             --installer downloaded/install \
             --skip-runtime
@@ -159,7 +155,7 @@ jobs:
           test "$(jq -r .tagName <<<"$release")" = "$RELEASE_TAG"
           test "$(jq -r .isDraft <<<"$release")" = false
           test "$(jq -r .isImmutable <<<"$release")" = true
-          test "$(jq '.assets | length' <<<"$release")" -eq 4
+          test "$(jq '.assets | length' <<<"$release")" -eq 3
           test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
           gh release verify "$RELEASE_TAG"
           for asset in dist/*; do gh release verify-asset "$RELEASE_TAG" "$asset"; done

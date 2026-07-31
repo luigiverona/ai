@@ -19,9 +19,6 @@ from tools.build_installer import file_digest, validate_installer
 from tools.identity import IDENTITY, project_version
 
 ARCHIVE_PATTERN = re.escape(IDENTITY.archive_stem)
-CHECKSUM_PATTERN = re.compile(
-    rf"^([0-9a-f]{{64}})  ({ARCHIVE_PATTERN}-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz)\n$"
-)
 SUMS_PATTERN = re.compile(
     rf"^([0-9a-f]{{64}})  ({ARCHIVE_PATTERN}-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz)\n"
     r"([0-9a-f]{64})  install\n$"
@@ -70,15 +67,6 @@ def commit_epoch(root: Path) -> int:
     return int(result.stdout.strip())
 
 
-def validate_checksum(path: Path, archive: Path, digest: str) -> None:
-    content = path.read_text(encoding="ascii")
-    match = CHECKSUM_PATTERN.fullmatch(content)
-    if not match:
-        raise ValueError(f"invalid checksum syntax: {path.name}")
-    if match.group(1) != digest or match.group(2) != archive.name:
-        raise ValueError(f"checksum does not match archive: {path.name}")
-
-
 def validate_gzip_header(archive: Path, epoch: int) -> None:
     with archive.open("rb") as handle:
         header = handle.read(10)
@@ -113,7 +101,6 @@ def validate_installer_asset(installer: Path, version: str, archive_digest: str)
 def validate_archive(
     root: Path,
     archive: Path,
-    checksum: Path,
     sums: Path,
     installer: Path,
     *,
@@ -125,7 +112,6 @@ def validate_archive(
     if archive.name != expected_name:
         raise ValueError(f"archive must be named {expected_name}")
     digest = file_digest(archive)
-    validate_checksum(checksum, archive, digest)
     validate_installer_asset(installer, version, digest)
     validate_sums(sums, archive, digest, installer)
     epoch = commit_epoch(root)
@@ -206,7 +192,6 @@ def exercise_runtime(
             {
                 "HOME": str(home),
                 "PYTHONPATH": str(extracted_root / "src"),
-                IDENTITY.catalog_environment_variable: str(extracted_root),
             }
         )
         commands = (
@@ -234,7 +219,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("archive", type=Path)
     parser.add_argument("--project-root", type=Path, default=Path.cwd())
-    parser.add_argument("--checksum", type=Path)
     parser.add_argument("--sums", type=Path)
     parser.add_argument("--installer", type=Path)
     parser.add_argument("--skip-runtime", action="store_true", help=argparse.SUPPRESS)
@@ -244,14 +228,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     archive = args.archive.resolve()
-    checksum = (args.checksum or Path(f"{archive}.sha256")).resolve()
     sums = (args.sums or archive.parent / "SHA256SUMS").resolve()
     installer = (args.installer or archive.parent / "install").resolve()
     try:
         digest = validate_archive(
             args.project_root.resolve(),
             archive,
-            checksum,
             sums,
             installer,
             run_runtime=not args.skip_runtime,

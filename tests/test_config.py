@@ -3,31 +3,16 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from subprocess import CompletedProcess
-from unittest.mock import patch
 
 from ai_setup.config.codex import CodexManager
 from ai_setup.config.git import GitConfigurator, GitIdentity
 from ai_setup.config.ssh import SSHManager
-from ai_setup.config.ssh_inventory import (
-    RemoteKey,
-    eligible_for_deletion,
-    github_correlated_local_keys,
-    inventory_local,
-)
-from ai_setup.errors import ValidationError
+from ai_setup.errors import ApplicationError, ValidationError
 from ai_setup.execution.runner import CommandRunner
-from ai_setup.ui.terminal import Terminal
 from tests.helpers import FakeRunner
 
 
 class ConfigTests(unittest.TestCase):
-    PUBLIC_KEY = (
-        "ssh-ed25519 "
-        "AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f "
-        "fixture@example\n"
-    )
-
     def test_git_preserves_unrelated_configuration(self) -> None:
         runner = FakeRunner()
         GitConfigurator(runner).configure(GitIdentity("A", "a@example.com"))  # type: ignore[arg-type]
@@ -38,26 +23,6 @@ class ConfigTests(unittest.TestCase):
                 if command.mutate
             )
         )
-
-    def test_ssh_inventory_and_protected_deletion(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            ssh = Path(raw) / ".ssh"
-            ssh.mkdir()
-            private = ssh / "id_ed25519_old"
-            public = ssh / "id_ed25519_old.pub"
-            private.write_text("private", encoding="utf-8")
-            public.write_text(self.PUBLIC_KEY, encoding="utf-8")
-            inventory = inventory_local(ssh)
-            self.assertEqual(len(inventory.keys), 1)
-            self.assertTrue(
-                eligible_for_deletion(inventory.keys[0], ssh, ssh / "id_ed25519_ai_github")
-            )
-
-    def test_ssh_delete_requires_explicit_confirmation(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            manager = SSHManager(FakeRunner(), Path(raw))  # type: ignore[arg-type]
-            with self.assertRaises(PermissionError):
-                manager.delete((), explicit_confirmation=False)
 
     def test_ssh_host_config_preserves_existing_content(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -86,39 +51,6 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.read_text(), "Host example.com\n")
             self.assertEqual(fragment.read_text(), "unrelated\n")
 
-    def test_remote_deletion_requires_matching_fingerprint(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            manager = SSHManager(FakeRunner(), Path(raw))  # type: ignore[arg-type]
-            with self.assertRaises(PermissionError):
-                manager.delete_remote(
-                    (RemoteKey(1, "unrelated", "SHA256:no"),),
-                    eligible_fingerprints=frozenset({"SHA256:yes"}),
-                    explicit_confirmation=True,
-                )
-
-    def test_remote_key_material_is_suppressed_from_verbose_output(self) -> None:
-        output: list[str] = []
-        runner = CommandRunner(verbose=True, output=output.append)
-        response = f"1\tfixture\t{self.PUBLIC_KEY.strip()}\n"
-        with patch(
-            "ai_setup.execution.runner.subprocess.run",
-            return_value=CompletedProcess((), 0, response, ""),
-        ):
-            keys = SSHManager(runner, Path("/tmp/unused")).inventory_remote()
-        self.assertEqual(keys[0].fingerprint, "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA")
-        self.assertFalse(any("AAAAC3" in line for line in output))
-
-    def test_only_github_correlated_local_keys_are_cleanup_candidates(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            ssh = Path(raw) / ".ssh"
-            ssh.mkdir()
-            for name in ("github", "server"):
-                (ssh / name).write_text("private fixture")
-                (ssh / f"{name}.pub").write_text(self.PUBLIC_KEY)
-            local = inventory_local(ssh).keys
-            remote = (RemoteKey(1, "github", local[0].fingerprint),)
-            self.assertEqual(github_correlated_local_keys(local, remote), local)
-
     def test_dedicated_key_symlink_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             home = Path(raw)
@@ -132,9 +64,47 @@ class ConfigTests(unittest.TestCase):
                 manager.create("example@example.com")
             self.assertEqual(target.read_text(), "keep")
 
-    def test_yes_never_approves_destructive_prompt(self) -> None:
-        terminal = Terminal(input_fn=lambda _: "", output=lambda _: None)
-        self.assertFalse(terminal.confirm("Delete?", assume_yes=True, destructive=True))
+    def test_absent_dedicated_key_is_created_without_touching_unrelated_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            ssh = home / ".ssh"
+            ssh.mkdir()
+            unrelated = ssh / "id_ed25519_unrelated"
+            unrelated.write_bytes(b"unrelated private bytes")
+            before = unrelated.read_bytes()
+            manager = SSHManager(CommandRunner(output=lambda _: None), home)
+            self.assertTrue(manager.create("fixture@example.com"))
+            self.assertTrue(manager.key.is_file())
+            self.assertTrue(manager.key.with_suffix(".pub").is_file())
+            self.assertEqual(unrelated.read_bytes(), before)
+
+    def test_recognized_dedicated_key_is_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            manager = SSHManager(CommandRunner(output=lambda _: None), home)
+            self.assertTrue(manager.create("fixture@example.com"))
+            private = manager.key.read_bytes()
+            public = manager.key.with_suffix(".pub").read_bytes()
+            self.assertFalse(manager.create("changed@example.com"))
+            self.assertEqual(manager.key.read_bytes(), private)
+            self.assertEqual(manager.key.with_suffix(".pub").read_bytes(), public)
+
+    def test_unrecognized_dedicated_collisions_are_refused_unchanged(self) -> None:
+        for collision in ("private", "public"):
+            with self.subTest(collision=collision), tempfile.TemporaryDirectory() as raw:
+                home = Path(raw)
+                manager = SSHManager(CommandRunner(output=lambda _: None), home)
+                self.assertTrue(manager.create("fixture@example.com"))
+                private = manager.key
+                public = manager.key.with_suffix(".pub")
+                if collision == "private":
+                    private.write_bytes(b"unrecognized private bytes")
+                else:
+                    public.write_text("ssh-ed25519 invalid fixture\n", encoding="ascii")
+                before = (private.read_bytes(), public.read_bytes())
+                with self.assertRaises(ApplicationError):
+                    manager.create("fixture@example.com")
+                self.assertEqual((private.read_bytes(), public.read_bytes()), before)
 
     def test_codex_launchers_have_separate_homes_and_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -10,15 +10,6 @@ from ai_setup.config.files import (
     inspect_managed_file,
     replace_managed_file,
 )
-from ai_setup.config.ssh_inventory import (
-    LocalKey,
-    RemoteKey,
-    SSHInventory,
-    fingerprint_text,
-    inventory_local,
-    open_revalidated_root,
-    open_ssh_root,
-)
 from ai_setup.errors import ValidationError
 from ai_setup.execution.runner import Command, CommandRunner
 from ai_setup.identity import IDENTITY
@@ -31,34 +22,111 @@ class SSHManager:
         self.ssh_dir = home / ".ssh"
         self.key = IDENTITY.ssh_key(home)
 
-    def inventory(self) -> SSHInventory:
-        return inventory_local(
-            self.ssh_dir,
-            owner_uid=os.getuid(),
-            dedicated_name=self.key.name,
-        )
+    def _inspect_dedicated_pair(self) -> bool:
+        owner_uid = os.getuid()
+        try:
+            root = self.ssh_dir.lstat()
+        except FileNotFoundError:
+            return False
+        if stat.S_ISLNK(root.st_mode) or not stat.S_ISDIR(root.st_mode) or root.st_uid != owner_uid:
+            raise ValidationError("SSH", "inspect dedicated key", "SSH root is unsafe")
 
-    def inventory_remote(self) -> tuple[RemoteKey, ...]:
-        result = self.runner.run(
+        observed: list[os.stat_result | None] = []
+        for path in (self.key, self.key.with_suffix(".pub")):
+            try:
+                item = path.lstat()
+            except FileNotFoundError:
+                item = None
+            if item is not None and (
+                not stat.S_ISREG(item.st_mode) or item.st_uid != owner_uid or item.st_nlink != 1
+            ):
+                raise ValidationError(
+                    "SSH",
+                    "inspect dedicated key",
+                    f"{path.name} is symbolic, non-regular, wrong-owner, or hard-linked",
+                )
+            observed.append(item)
+        private, public = observed
+        if (private is None) != (public is None):
+            raise ValidationError(
+                "SSH",
+                "inspect dedicated key",
+                "dedicated SSH key pair is incomplete; refusing to overwrite it",
+            )
+        if private is None:
+            return False
+        if public is None:
+            raise RuntimeError("dedicated key pair validation lost its public key")
+
+        public_path = self.key.with_suffix(".pub")
+        try:
+            public_fd = os.open(
+                public_path,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+            try:
+                opened = os.fstat(public_fd)
+                if (opened.st_dev, opened.st_ino) != (public.st_dev, public.st_ino):
+                    raise OSError("dedicated public key changed while opening")
+                public_bytes = b""
+                while chunk := os.read(public_fd, 4096):
+                    public_bytes += chunk
+                    if len(public_bytes) > 1024 * 1024:
+                        raise OSError("dedicated public key is too large")
+            finally:
+                os.close(public_fd)
+            public_parts = public_bytes.decode("ascii").split()
+        except (OSError, UnicodeError) as exc:
+            raise ValidationError(
+                "SSH", "inspect dedicated key", "dedicated public key is invalid"
+            ) from exc
+        if len(public_parts) < 2 or public_parts[0] != "ssh-ed25519":
+            raise ValidationError("SSH", "inspect dedicated key", "dedicated public key is invalid")
+        self.runner.run(
             Command(
-                (
-                    "gh",
-                    "api",
-                    "user/keys",
-                    "--paginate",
-                    "--jq",
-                    '.[] | "\\(.id)\\t\\(.title)\\t\\(.key)"',
-                ),
+                ("ssh-keygen", "-l", "-f", str(public_path)),
                 mutate=False,
                 sensitive_output=True,
+                failure_component="SSH",
+                failure_operation="validate dedicated public key",
             )
         )
-        keys: list[RemoteKey] = []
-        for line in result.stdout.splitlines():
-            parts = line.split("\t", 2)
-            if len(parts) == 3 and parts[0].isdigit():
-                keys.append(RemoteKey(int(parts[0]), parts[1], fingerprint_text(parts[2])))
-        return tuple(sorted(keys, key=lambda key: key.key_id))
+        derived = self.runner.run(
+            Command(
+                ("ssh-keygen", "-y", "-f", str(self.key)),
+                mutate=False,
+                sensitive_output=True,
+                failure_component="SSH",
+                failure_operation="validate dedicated key",
+            )
+        ).stdout.split()
+        if len(derived) < 2 or derived[:2] != public_parts[:2]:
+            raise ValidationError(
+                "SSH",
+                "inspect dedicated key",
+                "dedicated private and public keys do not match",
+            )
+        for path, expected in ((self.key, private), (public_path, public)):
+            current = path.lstat()
+            if (
+                current.st_dev,
+                current.st_ino,
+                current.st_uid,
+                current.st_nlink,
+                current.st_size,
+                current.st_mtime_ns,
+            ) != (
+                expected.st_dev,
+                expected.st_ino,
+                expected.st_uid,
+                expected.st_nlink,
+                expected.st_size,
+                expected.st_mtime_ns,
+            ):
+                raise ValidationError(
+                    "SSH", "inspect dedicated key", f"{path.name} changed during validation"
+                )
+        return True
 
     def create(self, email: str) -> bool:
         ensure_managed_directory(
@@ -67,94 +135,31 @@ class SSHManager:
             mode=0o700,
             owner_uid=os.getuid(),
         )
-        root_fd, _ = open_ssh_root(self.ssh_dir, owner_uid=os.getuid(), missing_ok=False)
-        if root_fd is None:
-            raise ValidationError("SSH", "inspect dedicated key", "SSH root is missing")
-        try:
-            try:
-                private = os.stat(self.key.name, dir_fd=root_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                private = None
-            try:
-                public = os.stat(self.key.name + ".pub", dir_fd=root_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                public = None
-        finally:
-            os.close(root_fd)
-        for name, item in ((self.key.name, private), (self.key.name + ".pub", public)):
-            if item is not None and (
-                not stat.S_ISREG(item.st_mode) or item.st_uid != os.getuid() or item.st_nlink != 1
-            ):
-                raise ValidationError(
-                    "SSH",
-                    "inspect dedicated key",
-                    f"{name} is symbolic, non-regular, wrong-owner, or hard-linked",
-                )
-        if (private is None) != (public is None):
-            raise ValidationError(
-                "SSH",
-                "inspect dedicated key",
-                "dedicated SSH key pair is incomplete; refusing to overwrite it",
-            )
-        created = private is None
+        created = not self._inspect_dedicated_pair()
         if created:
             self.runner.run(
                 Command(("ssh-keygen", "-t", "ed25519", "-f", str(self.key), "-C", email, "-N", ""))
             )
         if not self.runner.dry_run:
-            inventory = self.inventory()
-            dedicated = next(
-                (key for key in inventory.keys if key.private_name == self.key.name),
-                None,
-            )
-            if dedicated is None:
+            if not self._inspect_dedicated_pair():
                 raise ValidationError(
-                    "SSH",
-                    "verify dedicated key",
-                    "dedicated key pair is unsafe or has an invalid public key",
+                    "SSH", "verify dedicated key", "dedicated key pair is missing"
                 )
-            root_fd, current_root = open_ssh_root(
-                self.ssh_dir, owner_uid=os.getuid(), missing_ok=False
-            )
-            if root_fd is None or current_root != dedicated.root:
-                if root_fd is not None:
-                    os.close(root_fd)
-                raise ValidationError(
-                    "SSH", "verify dedicated key", "SSH root changed before mode update"
-                )
-            try:
-                for name, mode, expected in (
-                    (dedicated.private_name, 0o600, dedicated.private),
-                    (dedicated.public_name, 0o644, dedicated.public),
-                ):
-                    fd = os.open(
-                        name,
-                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
-                        dir_fd=root_fd,
-                    )
-                    try:
-                        current = os.fstat(fd)
-                        if (
-                            current.st_dev,
-                            current.st_ino,
-                            current.st_uid,
-                            current.st_nlink,
-                        ) != (
-                            expected.device,
-                            expected.inode,
-                            expected.owner_uid,
-                            expected.link_count,
-                        ) or not stat.S_ISREG(current.st_mode):
-                            raise ValidationError(
-                                "SSH",
-                                "verify dedicated key",
-                                f"{name} changed before mode update",
-                            )
-                        os.fchmod(fd, mode)
-                    finally:
-                        os.close(fd)
-            finally:
-                os.close(root_fd)
+            for path, mode in ((self.key, 0o600), (self.key.with_suffix(".pub"), 0o644)):
+                fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                try:
+                    current = os.fstat(fd)
+                    if (
+                        not stat.S_ISREG(current.st_mode)
+                        or current.st_uid != os.getuid()
+                        or current.st_nlink != 1
+                    ):
+                        raise ValidationError(
+                            "SSH", "verify dedicated key", f"{path.name} changed before mode update"
+                        )
+                    os.fchmod(fd, mode)
+                finally:
+                    os.close(fd)
         self._configure_host()
         return created
 
@@ -250,88 +255,3 @@ class SSHManager:
         return result.returncode == 1 and "successfully authenticated" in (
             result.stdout + result.stderr
         )
-
-    def delete(self, keys: tuple[LocalKey, ...], *, explicit_confirmation: bool) -> None:
-        if not explicit_confirmation:
-            raise PermissionError("SSH key deletion requires explicit confirmation")
-        root_fd = open_revalidated_root(
-            self.ssh_dir,
-            keys,
-            owner_uid=os.getuid(),
-            dedicated=self.key,
-        )
-        removed: list[str] = []
-        try:
-            if self.runner.dry_run:
-                return
-            for key in keys:
-                for name, expected in (
-                    (key.public_name, key.public),
-                    (key.private_name, key.private),
-                ):
-                    current = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
-                    if (
-                        current.st_dev,
-                        current.st_ino,
-                        current.st_mode,
-                        current.st_uid,
-                        current.st_nlink,
-                        current.st_size,
-                        current.st_mtime_ns,
-                        current.st_ctime_ns,
-                    ) != (
-                        expected.device,
-                        expected.inode,
-                        expected.mode,
-                        expected.owner_uid,
-                        expected.link_count,
-                        expected.size,
-                        expected.modified_ns,
-                        expected.changed_ns,
-                    ):
-                        raise ValidationError(
-                            "SSH",
-                            "delete keys",
-                            "SSH inventory changed; review it again before deletion",
-                        )
-                    try:
-                        os.unlink(name, dir_fd=root_fd)
-                    except OSError as exc:
-                        remaining = [
-                            pending
-                            for selected in keys
-                            for pending in (selected.public_name, selected.private_name)
-                            if pending not in removed
-                        ]
-                        raise ValidationError(
-                            "SSH",
-                            "delete keys",
-                            f"removed {removed or 'nothing'}; remaining {remaining}: {exc}",
-                        ) from exc
-                    removed.append(name)
-        finally:
-            os.close(root_fd)
-
-    def validate_deletion(self, keys: tuple[LocalKey, ...]) -> None:
-        root_fd = open_revalidated_root(
-            self.ssh_dir,
-            keys,
-            owner_uid=os.getuid(),
-            dedicated=self.key,
-        )
-        os.close(root_fd)
-
-    def delete_remote(
-        self,
-        keys: tuple[RemoteKey, ...],
-        *,
-        eligible_fingerprints: frozenset[str],
-        explicit_confirmation: bool,
-    ) -> None:
-        if not explicit_confirmation:
-            raise PermissionError("GitHub key deletion requires explicit confirmation")
-        for key in keys:
-            if not key.fingerprint or key.fingerprint not in eligible_fingerprints:
-                raise PermissionError(f"ineligible GitHub key: {key.title}")
-        for key in keys:
-            self.runner.run(Command(("gh", "api", "--method", "DELETE", f"user/keys/{key.key_id}")))

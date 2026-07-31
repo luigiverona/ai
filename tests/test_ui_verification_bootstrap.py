@@ -286,13 +286,49 @@ class UiVerificationBootstrapTests(unittest.TestCase):
         self, installer: Path, env: dict[str, str], **extra: str
     ) -> subprocess.CompletedProcess[str]:
         invocation_env = env.copy()
+        point = extra.pop("AI_WORKSTATION_TEST_FAILURE_POINT", None)
+        extra.pop("AI_WORKSTATION_INSTALLER_TESTING", None)
+        extra.pop("AI_WORKSTATION_INSTALLER_TEST_SENTINEL", None)
         invocation_env.update(extra)
+        invoked = self._instrument_installer(installer, point, pause=False) if point else installer
         return subprocess.run(
-            ("bash", str(installer)),
+            ("bash", str(invoked)),
             env=invocation_env,
             text=True,
             capture_output=True,
         )
+
+    def _instrument_installer(self, installer: Path, point: str, *, pause: bool) -> Path:
+        anchors = {
+            "after_journal_preparation": "transaction_started=true\n",
+            "after_verified_extraction": "write_journal verified\n",
+            "after_preserving_previous_release": "write_journal previous_state_preserved\n",
+            "after_installing_release": "write_journal new_release_installed\n",
+            "before_replacing_launcher": 'mv -T -- "${launcher_tmp}" "${launcher}"\n',
+            "after_replacing_launcher": "write_journal launcher_replaced\n",
+            "before_shell_integration": 'mv -T -- "${shell_tmp}" "${path_file}"\n',
+            "after_shell_integration": "write_journal shell_integration_replaced\n",
+            "before_switching_current": 'mv -T -- "${current_stage}/link" "${current}"\n',
+            "after_switching_current": "write_journal current_switched\n",
+            "after_recording_committed": "write_journal committed\n",
+            "during_cleanup_after_commit": "write_journal cleaning\n",
+        }
+        anchor = anchors[point]
+        source = installer.read_text(encoding="utf-8")
+        self.assertEqual(source.count(anchor), 1, point)
+        action = (
+            f"printf 'test pause at {point}\\n'\nwhile true; do sleep 1; done\n"
+            if pause
+            else f'die "injected failure at {point}"\n'
+        )
+        instrumented = installer.with_name(f"install-{point}-{'pause' if pause else 'fail'}")
+        if point.startswith("before_"):
+            content = source.replace(anchor, action + anchor)
+        else:
+            content = source.replace(anchor, anchor + action)
+        instrumented.write_text(content, encoding="utf-8")
+        instrumented.chmod(0o700)
+        return instrumented
 
     def _managed_snapshot(self, home: Path) -> dict[str, object]:
         release = home / ".local/share/ai/releases/9.8.7"
@@ -645,15 +681,9 @@ class UiVerificationBootstrapTests(unittest.TestCase):
             )
             before = self._managed_snapshot(home)
             invocation_env = env.copy()
-            invocation_env.update(
-                {
-                    "AI_WORKSTATION_INSTALLER_TESTING": "1",
-                    "AI_WORKSTATION_INSTALLER_TEST_SENTINEL": "ai-bootstrap-test-only",
-                    "AI_WORKSTATION_TEST_PAUSE_POINT": "after_switching_current",
-                }
-            )
+            invoked = self._instrument_installer(installer, "after_switching_current", pause=True)
             process = subprocess.Popen(
-                ("bash", str(installer)),
+                ("bash", str(invoked)),
                 env=invocation_env,
                 text=True,
                 stdout=subprocess.PIPE,
@@ -701,15 +731,9 @@ class UiVerificationBootstrapTests(unittest.TestCase):
         point: str,
     ) -> None:
         invocation_env = env.copy()
-        invocation_env.update(
-            {
-                "AI_WORKSTATION_INSTALLER_TESTING": "1",
-                "AI_WORKSTATION_INSTALLER_TEST_SENTINEL": "ai-bootstrap-test-only",
-                "AI_WORKSTATION_TEST_PAUSE_POINT": point,
-            }
-        )
+        invoked = self._instrument_installer(installer, point, pause=True)
         process = subprocess.Popen(
-            ("bash", str(installer)),
+            ("bash", str(invoked)),
             env=invocation_env,
             text=True,
             stdout=subprocess.PIPE,
@@ -821,25 +845,6 @@ class UiVerificationBootstrapTests(unittest.TestCase):
             self.assertIn("transaction journal", result.stderr)
             self.assertTrue(journal.is_symlink())
             self.assertEqual(outside.read_text(), "preserve")
-
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            _, installer, env = self._bootstrap_fixture(root)
-            self.assertEqual(self._install(installer, env).returncode, 0)
-            home = Path(env["HOME"])
-            journal = home / ".local/share/ai/.ai-workstation-transaction.json"
-            journal.write_text("{}\n", encoding="utf-8")
-            journal.chmod(0o600)
-            result = self._install(
-                installer,
-                env,
-                AI_WORKSTATION_INSTALLER_TESTING="1",
-                AI_WORKSTATION_INSTALLER_TEST_SENTINEL="ai-bootstrap-test-only",
-                AI_WORKSTATION_TEST_WRONG_OWNER_JOURNAL=str(journal),
-            )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("user-owned regular file", result.stderr)
-            self.assertTrue(journal.is_file())
 
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

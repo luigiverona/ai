@@ -112,24 +112,12 @@ hardware durability behavior.
 
 ## SSH key handling
 
-`ai` owns one dedicated key at `~/.ssh/id_ed25519_ai_github`. Existing local and
-GitHub keys are inventoried and preserved by default. Potential cleanup candidates must
-be immediate, user-owned, single-link regular private/public pairs beneath a validated
-non-symlink SSH directory. Inventory never opens private-key content or follows symbolic
-private or public paths. Public-key bytes are opened relative to the SSH directory,
-checked against non-following metadata, parsed as one OpenSSH record, and fingerprinted
-with SHA-256.
-
-The dedicated key, its public companion, protected names, multiply linked files, and
-aliases of protected file identities are never deletion-eligible. Eligibility requires
-an exact fingerprint match with a current GitHub account key; filenames, comments,
-titles, and email addresses are not proof. After destructive confirmation, the complete
-selected batch—including root and file identities, ownership, type, link counts, and
-public fingerprints—is revalidated before the first local unlink.
-
-Deletion requires an explicit destructive confirmation; `--yes` cannot supply it.
-Generic or unrelated keys are not adopted as the managed key and are not deletion
-targets merely because they are present.
+`ai` owns only the dedicated private/public pair at
+`~/.ssh/id_ed25519_ai_github{,.pub}` and `~/.ssh/config.d/ai-github.conf`, plus its exact
+include line in `~/.ssh/config`. It does not inventory, open, correlate, list, or delete
+unrelated local or GitHub SSH keys. Dedicated paths must be user-owned, single-link
+regular files; symbolic, incomplete, malformed, mismatched, or otherwise unrecognized
+pairs are refused and left unchanged. Private-key bytes are never printed or logged.
 
 ## Codex isolation
 
@@ -148,11 +136,10 @@ Release tooling selects tracked runtime inputs and normalizes archive order, own
 permissions, timestamps, and gzip metadata. Two clean independent builds must produce
 identical bytes before publication.
 
-Each release is limited to four intended assets:
+Each release is limited to three intended assets:
 
 - `install`
 - `ai-<version>.tar.gz`
-- `ai-<version>.tar.gz.sha256`
 - `SHA256SUMS`
 
 The archive and installer are independently validated before and after upload. The

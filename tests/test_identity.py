@@ -33,7 +33,6 @@ class RuntimeIdentityTests(unittest.TestCase):
                 "ssh_fragment_filename": "ai-github.conf",
                 "shell_managed_marker": "# Added by ai",
                 "fish_configuration_filename": "ai.fish",
-                "catalog_environment_variable": "AI_WORKSTATION_CATALOG_ROOT",
             },
         )
         with self.assertRaises(AttributeError):
@@ -92,14 +91,10 @@ class RuntimeIdentityTests(unittest.TestCase):
         self.assertEqual(RELEASE_IDENTITY.install_root_relative, ".local/share/ai")
         self.assertEqual(RELEASE_IDENTITY.launcher_relative, ".local/bin/ai")
         self.assertEqual(
-            RELEASE_IDENTITY.catalog_environment_variable, "AI_WORKSTATION_CATALOG_ROOT"
-        )
-        self.assertEqual(
             RELEASE_IDENTITY.release_assets("1.0.1"),
             {
                 "install",
                 "ai-1.0.1.tar.gz",
-                "ai-1.0.1.tar.gz.sha256",
                 "SHA256SUMS",
             },
         )
@@ -112,7 +107,6 @@ class RuntimeIdentityTests(unittest.TestCase):
                 IDENTITY.repository_slug,
                 IDENTITY.install_root_relative.as_posix(),
                 IDENTITY.launcher_relative.as_posix(),
-                IDENTITY.catalog_environment_variable,
             ),
             (
                 RELEASE_IDENTITY.display_name,
@@ -122,14 +116,13 @@ class RuntimeIdentityTests(unittest.TestCase):
                 RELEASE_IDENTITY.repository_slug,
                 RELEASE_IDENTITY.install_root_relative,
                 RELEASE_IDENTITY.launcher_relative,
-                RELEASE_IDENTITY.catalog_environment_variable,
             ),
         )
 
 
 class VersionResolutionTests(unittest.TestCase):
     def write_project(
-        self, root: Path, *, name: str = "ai-workstation", version: str = "1.0.3"
+        self, root: Path, *, name: str = "ai-workstation", version: str = "2.0.0"
     ) -> Path:
         package_file = root / "src/ai_setup/version.py"
         package_file.parent.mkdir(parents=True, exist_ok=True)
@@ -142,11 +135,11 @@ class VersionResolutionTests(unittest.TestCase):
 
     def test_pyproject_is_the_source_checkout_version(self) -> None:
         data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-        self.assertEqual(data["project"]["version"], "1.0.3")
-        self.assertEqual(project_version(Path.cwd()), "1.0.3")
-        self.assertEqual(resolve_version(), "1.0.3")
+        self.assertEqual(data["project"]["version"], "2.0.0")
+        self.assertEqual(project_version(Path.cwd()), "2.0.0")
+        self.assertEqual(resolve_version(), "2.0.0")
         self.assertNotIn(
-            '__version__ = "1.0.3"',
+            '__version__ = "2.0.0"',
             Path("src/ai_setup/__init__.py").read_text(encoding="utf-8"),
         )
 
@@ -156,7 +149,7 @@ class VersionResolutionTests(unittest.TestCase):
             metadata = Mock(return_value="9.9.9")
             self.assertEqual(
                 resolve_version(package_file=package_file, metadata_version=metadata),
-                "1.0.3",
+                "2.0.0",
             )
             metadata.assert_not_called()
 

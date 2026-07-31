@@ -14,7 +14,6 @@ from ai_setup.catalog.loader import load_catalog
 from ai_setup.cli import main
 from ai_setup.cli import parser as cli_parser
 from ai_setup.config.codex import CodexManager
-from ai_setup.config.ssh_inventory import SSHInventory
 from ai_setup.errors import CommandError, ValidationError
 from ai_setup.execution.runner import Command, CommandResult
 from ai_setup.models import (
@@ -274,7 +273,6 @@ class OutputTranscriptTests(unittest.TestCase):
                 transcript.output("The dedicated key already exists.")
                 transcript.output("The key is registered with GitHub.")
                 transcript.output("The GitHub connection was verified.")
-                transcript.output("Existing SSH keys were preserved.")
 
             def codex_interrupt(_: Path) -> None:
                 transcript.output("codex-01 is not signed in.")
@@ -308,7 +306,7 @@ class OutputTranscriptTests(unittest.TestCase):
             "Keep this identity? [Y/n] y\nGit identity unchanged.\n\n"
             "GitHub\nAlready signed in as luigiverona.\nGit protocol already uses SSH.\n\n"
             "SSH\nThe dedicated key already exists.\nThe key is registered with GitHub.\n"
-            "The GitHub connection was verified.\nExisting SSH keys were preserved.\n\n"
+            "The GitHub connection was verified.\n\n"
             "Codex\ncodex-01 is not signed in.\nStarting sign-in for codex-01...\n\n"
             "Setup interrupted during Codex.\n"
             "Earlier completed stages remain valid: Administrator access, System update, "
@@ -574,20 +572,10 @@ class OutputTranscriptTests(unittest.TestCase):
         transcript = Transcript()
         workflow = self.workflow(Plan((Capability.SSH,), (), ()), transcript)
         private = Path("/tmp/home/.ssh/id_ed25519_ai_github")
-        dedicated = Mock(
-            private_name=private.name,
-            fingerprint="SHA256:new",
-            protected=True,
-        )
         manager = Mock()
         manager.key = private
-        manager.inventory.side_effect = [
-            SSHInventory(None, (), ()),
-            SSHInventory(None, (dedicated,), ()),
-        ]
-        manager.inventory_remote.return_value = ()
         manager.create.return_value = True
-        manager.verify.return_value = True
+        manager.verify.side_effect = [False, True]
         with (
             patch("ai_setup.workflow.SSHManager", return_value=manager),
             patch("ai_setup.workflow.GitHubConfigurator.account", return_value="luigiverona"),
@@ -720,7 +708,7 @@ class OutputTranscriptTests(unittest.TestCase):
         self.assertEqual(status, 0)
         rendered = output.getvalue()
         self.assertTrue(rendered.startswith("Plan\n"))
-        for forbidden in ("ai 1.0.3", "\nArch Linux\n", "Shell:", "Step 1", "[01/", "Password:"):
+        for forbidden in ("ai 2.0.0", "\nArch Linux\n", "Shell:", "Step 1", "[01/", "Password:"):
             self.assertNotIn(forbidden, rendered)
         version = subprocess.run(
             (sys.executable, "-m", "ai_setup", "--version"),
@@ -729,4 +717,4 @@ class OutputTranscriptTests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
-        self.assertEqual(version.stdout, "ai 1.0.3\n")
+        self.assertEqual(version.stdout, "ai 2.0.0\n")

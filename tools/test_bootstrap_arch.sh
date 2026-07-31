@@ -58,9 +58,7 @@ install_twice() {
   local home="/home/${user}"
   local output
 
-  output="$(runuser -u "${user}" -- env HOME="${home}" \
-    AI_WORKSTATION_RELEASE_BASE="${RELEASE_BASE}" \
-    bash "${INSTALLER}")"
+  output="$(runuser -u "${user}" -- env HOME="${home}" bash "${INSTALLER}")"
   grep -Fq 'The ai command is installed.' <<<"${output}"
   grep -Fq "Configuring the ${user#ai-} PATH... done." <<<"${output}"
   grep -Fq 'Run ai to set up the workstation.' <<<"${output}"
@@ -72,9 +70,7 @@ install_twice() {
     printf 'bootstrap output exposed the curl transfer meter\n' >&2
     exit 1
   fi
-  runuser -u "${user}" -- env HOME="${home}" \
-    AI_WORKSTATION_RELEASE_BASE="${RELEASE_BASE}" \
-    bash "${INSTALLER}" >/dev/null
+  runuser -u "${user}" -- env HOME="${home}" bash "${INSTALLER}" >/dev/null
   assert_common_install "${user}"
 }
 
@@ -113,8 +109,7 @@ assert_unmodified_shell_file /home/ai-zsh/.config/fish/conf.d/ai.fish
 assert_unmodified_shell_file /home/ai-zsh/.bashrc
 
 sed "s/${expected_sha256}/$(printf '0%.0s' {1..64})/" "${INSTALLER}" >"${TAMPERED_INSTALLER}"
-if runuser -u ai-bad-checksum -- env HOME=/home/ai-bad-checksum \
-  AI_WORKSTATION_RELEASE_BASE="${RELEASE_BASE}" bash "${TAMPERED_INSTALLER}"; then
+if runuser -u ai-bad-checksum -- env HOME=/home/ai-bad-checksum bash "${TAMPERED_INSTALLER}"; then
   printf 'installer accepted an incorrect pinned checksum\n' >&2
   exit 1
 fi

@@ -27,9 +27,7 @@ VARIABLE_PATTERN = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)[^}]*\}|([A-Za-z_
 REMOTE_CHECKSUM_PATTERN = re.compile(
     r"(?i)\.sha256(?:[?#\s\"']|$)|(?:^|/)SHA256SUMS(?:[?#\s\"']|$)"
 )
-GITHUB_RELEASE_BASE = (
-    f'readonly RELEASE_BASE="${{AI_WORKSTATION_RELEASE_BASE:-{IDENTITY.release_base_url}}}"'
-)
+GITHUB_RELEASE_BASE = f'readonly RELEASE_BASE="{IDENTITY.release_base_url}"'
 INSTALLER_SECURITY_CONTRACT = (
     'readonly ROOT_MARKER_NAME=".ai-workstation-installation"',
     'readonly ROOT_MARKER_CONTENT="ai-workstation installation format 1"',

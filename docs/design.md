@@ -153,24 +153,12 @@ protocol when needed, and verifies again. GitHub login does not manage SSH keys.
 
 ### SSH
 
-SSH configuration owns one dedicated GitHub key and one managed host fragment. Existing
-keys are preserved by default. Cleanup eligibility uses local/remote fingerprint
-correlation, path containment, protected-file exclusion, and a separate destructive
-confirmation.
-
-Local inventory is non-recursive and anchored to an opened, user-owned, non-symlink
-`.ssh` directory. Candidate type, owner, link count, and device/inode identity come from
-non-following metadata. Only public companions are opened through the directory
-descriptor with no-follow flags; private-key bytes are never read. Strict OpenSSH
-public-key parsing verifies textual and embedded key types before calculating the
-standard SHA-256 fingerprint.
-
-Safe pairs retain relative names plus root/private/public identity snapshots. Dedicated,
-protected, multiply linked, malformed, incomplete, symbolic, special, or wrong-owner
-entries remain preserved. Exact GitHub fingerprint equality is the only correlation
-signal. After explicit destructive confirmation, every selected pair and the root are
-revalidated as one batch before exact descriptor-relative names are unlinked. Atomic
-batch rollback is not attempted; an unlink failure reports removed and remaining names.
+SSH configuration owns one dedicated GitHub private/public key pair and one managed host
+fragment. It inspects only those dedicated paths. An absent pair is created; an exact,
+user-owned, single-link regular Ed25519 pair is reused; an incomplete, malformed,
+mismatched, symbolic, hard-linked, or wrong-owner collision is refused unchanged.
+Unrelated local and GitHub keys are neither inventoried nor modified. Connectivity is
+checked with only the dedicated identity before registration is attempted.
 
 ### Codex
 
@@ -235,11 +223,10 @@ because it must operate before the Python package is installed.
 
 ## Release
 
-Every release has exactly four assets:
+Every release has exactly three assets:
 
 - `install`
 - `ai-<version>.tar.gz`
-- `ai-<version>.tar.gz.sha256`
 - `SHA256SUMS`
 
 The builder selects tracked runtime files and normalizes archive metadata. Independent
@@ -292,7 +279,7 @@ Tests enforce these critical invariants:
 - stage and Codex profile definitions each have one ordered source of truth;
 - managed paths derive from identity and an injected home;
 - unrelated SSH, shell, and Codex content is preserved;
-- destructive SSH cleanup cannot be approved by `--yes`;
+- unrelated SSH keys remain outside the inspected and managed surface;
 - authentication environments do not leak globally;
 - version and release identity agree across runtime, tools, and installer;
-- release construction is reproducible and limited to four intended assets.
+- release construction is reproducible and limited to three intended assets.

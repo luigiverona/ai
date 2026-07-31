@@ -155,7 +155,6 @@ exit 1
                         "PATH": f"{binary_root}:/usr/bin:/bin",
                         "PYTHONPATH": str(repository / "src"),
                         "PYTHONDONTWRITEBYTECODE": "1",
-                        "AI_WORKSTATION_CATALOG_ROOT": str(repository),
                         "XDG_RUNTIME_DIR": str(runtime),
                     }
                 )

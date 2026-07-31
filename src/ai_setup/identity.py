@@ -19,7 +19,6 @@ class ProjectIdentity:
     ssh_fragment_filename: str
     shell_managed_marker: str
     fish_configuration_filename: str
-    catalog_environment_variable: str
 
     def install_root(self, home: Path) -> Path:
         return home / self.install_root_relative
@@ -57,5 +56,4 @@ IDENTITY = ProjectIdentity(
     ssh_fragment_filename="ai-github.conf",
     shell_managed_marker="# Added by ai",
     fish_configuration_filename="ai.fish",
-    catalog_environment_variable="AI_WORKSTATION_CATALOG_ROOT",
 )

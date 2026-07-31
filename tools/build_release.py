@@ -216,7 +216,6 @@ def build(root: Path, output: Path, tag: str, *, allow_dirty: bool = False) -> t
         gzip_path.unlink(missing_ok=True)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     archive_line = f"{digest}  {archive.name}\n"
-    atomic_text(output / f"{archive.name}.sha256", archive_line)
     installer_digest = build_installer(root / "bootstrap/install.in", version, archive, installer)
     sums = archive_line + f"{installer_digest}  install\n"
     atomic_text(output / "SHA256SUMS", sums)

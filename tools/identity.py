@@ -19,7 +19,6 @@ class ReleaseIdentity:
     archive_stem: str
     install_root_relative: str
     launcher_relative: str
-    catalog_environment_variable: str
     version_token: str
     digest_token: str
     release_temp_prefix: str
@@ -34,7 +33,7 @@ class ReleaseIdentity:
 
     def release_assets(self, version: str) -> frozenset[str]:
         archive = self.archive_name(version)
-        return frozenset({"install", archive, f"{archive}.sha256", "SHA256SUMS"})
+        return frozenset({"install", archive, "SHA256SUMS"})
 
 
 IDENTITY = ReleaseIdentity(
@@ -46,7 +45,6 @@ IDENTITY = ReleaseIdentity(
     archive_stem="ai",
     install_root_relative=".local/share/ai",
     launcher_relative=".local/bin/ai",
-    catalog_environment_variable="AI_WORKSTATION_CATALOG_ROOT",
     version_token="@AI_WORKSTATION_VERSION@",  # noqa: S106 - deterministic template marker
     digest_token="@AI_WORKSTATION_ARCHIVE_SHA256@",  # noqa: S106 - deterministic template marker
     release_temp_prefix=".ai-release.",

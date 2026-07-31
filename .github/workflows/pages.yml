@@ -31,7 +31,7 @@ jobs:
           release=$(gh release view "$RELEASE_TAG" --json isDraft,isImmutable,targetCommitish,assets)
           test "$(jq -r .isDraft <<<"$release")" = false
           test "$(jq -r .isImmutable <<<"$release")" = true
-          test "$(jq '.assets | length' <<<"$release")" -eq 4
+          test "$(jq '.assets | length' <<<"$release")" -eq 3
           gh release verify "$RELEASE_TAG"
           mkdir release-assets
           gh release download "$RELEASE_TAG" --dir release-assets

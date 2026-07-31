@@ -9,7 +9,6 @@ from ai_setup.config.git import GitConfigurator, GitIdentity
 from ai_setup.config.github import GitHubConfigurator
 from ai_setup.config.shell import ShellInfo, configure_path, detect_shell
 from ai_setup.config.ssh import SSHManager
-from ai_setup.config.ssh_inventory import github_correlated_local_keys
 from ai_setup.errors import ApplicationError, ValidationError
 from ai_setup.execution.runner import Command, CommandRunner
 from ai_setup.execution.workspace import TemporaryWorkspace
@@ -431,14 +430,8 @@ class Workflow:
 
     def _ssh(self) -> None:
         manager = SSHManager(self.runner, self.options.home)
-        inventory = manager.inventory()
-        existing = inventory.keys
-        if self.options.verbose:
-            for entry in inventory.unsafe:
-                self.terminal.output(f"Preserved SSH entry {entry.name}: {entry.reason}.")
-        remote_existing = manager.inventory_remote()
         account = GitHubConfigurator(self.runner).account() or getpass.getuser()
-        dedicated_before = any(key.private_name == manager.key.name for key in existing)
+        dedicated_before = manager.key.exists() and manager.key.with_suffix(".pub").exists()
         if dedicated_before:
             self.terminal.output("The dedicated key already exists.")
         else:
@@ -448,16 +441,7 @@ class Workflow:
         )
         if created:
             self.terminal.output("The dedicated key was created.")
-        dedicated = next(
-            (key for key in manager.inventory().keys if key.private_name == manager.key.name),
-            None,
-        )
-        registered = bool(
-            dedicated
-            and dedicated.fingerprint
-            and any(key.fingerprint == dedicated.fingerprint for key in remote_existing)
-        )
-        if registered:
+        if manager.verify():
             self.terminal.output("The key is registered with GitHub.")
         else:
             self.terminal.output("Registering the key with GitHub...")
@@ -466,35 +450,6 @@ class Workflow:
         if not manager.verify():
             raise ValidationError("SSH", "verify GitHub connection", "authentication failed")
         self.terminal.output("The GitHub connection was verified.")
-        old = tuple(key for key in existing if not key.protected)
-        deleted_count = 0
-        if old and not self.terminal.confirm(
-            "Keep existing keys?", default=True, assume_yes=self.options.assume_yes
-        ):
-            eligible_old = github_correlated_local_keys(old, remote_existing)
-            for key in eligible_old:
-                self.terminal.output(
-                    f"Eligible local key: {manager.ssh_dir / key.private_name} ({key.fingerprint})."
-                )
-            if not eligible_old:
-                self.terminal.output(
-                    "No old local keys are correlated with GitHub; nothing was deleted."
-                )
-            elif self.terminal.confirm("Delete these keys?", destructive=True):
-                fingerprints = frozenset(key.fingerprint for key in eligible_old if key.fingerprint)
-                remote_old = tuple(k for k in remote_existing if k.fingerprint in fingerprints)
-                manager.validate_deletion(eligible_old)
-                manager.delete_remote(
-                    remote_old,
-                    eligible_fingerprints=fingerprints,
-                    explicit_confirmation=True,
-                )
-                manager.delete(eligible_old, explicit_confirmation=True)
-                deleted_count = len(eligible_old)
-                if not manager.verify():
-                    raise ValidationError("SSH", "reverify dedicated key", "authentication failed")
-        if old and len(old) > deleted_count:
-            self.terminal.output("Existing SSH keys were preserved.")
 
     def _codex(self, workspace: Path) -> None:
         codex = CodexManager(self.runner, self.options.home, workspace)

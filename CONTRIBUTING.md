@@ -38,7 +38,7 @@ mypy tools
 bash -n bootstrap/install.in
 shellcheck bootstrap/install.in
 actionlint
-python tools/build_release.py --tag v1.0.3 --check-only
+python tools/build_release.py --tag v2.0.0 --check-only
 git diff --check
 ```
 
@@ -80,7 +80,7 @@ A pull request should state:
 - security or trust-boundary impact;
 - validation executed and its results;
 - checks that were unavailable; and
-- migration implications, including whether existing installations are affected.
+- whether valid official installations and updates are affected.
 
 Keep mechanical renames separate from behavioral refactors when practical.
 
@@ -136,9 +136,7 @@ matrix against empty and representative disposable homes. Snapshot all persisten
 state before and after, exercise state-initializing fake providers, and require exact
 filesystem equality while retaining accurate existing-state detection.
 
-SSH inventory or deletion changes require disposable-home tests for root, private, and
-public symlinks; special files; ownership and hard links; strict public-key parsing;
-protected path and inode aliases; exact GitHub fingerprint correlation; and complete
-pre-deletion batch revalidation. Race fixtures must replace entries at explicit
-boundaries, prove zero deletion on validation failure, and verify that no private-key or
-remote-key material reaches output or logs.
+SSH changes require disposable-home tests for dedicated private/public path symlinks,
+special files, ownership, hard links, strict public-key parsing, pair matching, and exact
+fragment collisions. Tests must prove unrelated local and GitHub keys are never opened,
+listed, changed, or deleted and that private-key material never reaches output or logs.

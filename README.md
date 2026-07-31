@@ -49,7 +49,7 @@ Installation creates the `ai` launcher but does not run workstation setup. Run
 Common options:
 
 - `--dry-run` shows what would happen without making changes.
-- `--yes` accepts safe default confirmations, but never destructive SSH cleanup.
+- `--yes` accepts safe default confirmations.
 - `--verbose` shows detailed operations with configured secret redaction.
 
 Application categories and their current contents come from the manifests under
@@ -73,10 +73,10 @@ full Arch upgrade instead of a partial upgrade, builds AUR packages without root
 uses Flatpak's per-user scope. Dry runs do not execute mutation commands, while
 `ai status` uses a read-only command runner.
 
-Existing SSH keys are preserved by default. Eligible destructive cleanup requires a
-separate confirmation that `--yes` cannot approve. Managed files use guarded,
-atomic replacement, and unrelated files remain outside the managed surface. Codex
-profiles have separate state and credentials.
+`ai` manages only its dedicated GitHub SSH key and configuration fragment. Unrelated
+local and GitHub SSH keys are ignored. Managed files use guarded atomic replacement,
+and unrelated files remain outside the managed surface. Codex profiles have separate
+state and credentials.
 
 Published releases contain an immutable, checksummed runtime archive. The installer
 refuses unrelated install roots, launchers, and dedicated shell files; verifies an
@@ -104,7 +104,7 @@ ruff format --check .
 mypy src
 mypy tools
 bash -n bootstrap/install.in
-python tools/build_release.py --tag v1.0.3 --check-only
+python tools/build_release.py --tag v2.0.0 --check-only
 git diff --check
 ```
 
