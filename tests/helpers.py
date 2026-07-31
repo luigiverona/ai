@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 from ai_setup.execution.runner import Command, CommandResult
+
+
+@contextmanager
+def controlled_executable_lookup(paths: Mapping[str, str | None]) -> Iterator[None]:
+    """Control the executable-discovery boundary without consulting the host PATH."""
+    with patch("ai_setup.packages.managers.shutil.which", side_effect=paths.get):
+        yield
 
 
 class FakeRunner:

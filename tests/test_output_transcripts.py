@@ -26,7 +26,7 @@ from ai_setup.models import (
 from ai_setup.planning.planner import build_plan
 from ai_setup.ui.terminal import Terminal
 from ai_setup.workflow import Workflow
-from tests.helpers import FakeRunner
+from tests.helpers import FakeRunner, controlled_executable_lookup
 
 
 class Transcript:
@@ -103,6 +103,14 @@ class GitIdentityRunner(FakeRunner):
 
 class OutputTranscriptTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.enterContext(
+            controlled_executable_lookup(
+                {
+                    "flatpak": "/usr/bin/flatpak",
+                    "yay": "/usr/bin/yay",
+                }
+            )
+        )
         self.catalog = load_catalog()
         self.complete_plan = build_plan(
             Selection(frozenset(Capability), complete=True), self.catalog

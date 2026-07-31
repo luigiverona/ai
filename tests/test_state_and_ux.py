@@ -15,7 +15,7 @@ from ai_setup.planning.state import StateInspector
 from ai_setup.ui.terminal import Terminal
 from ai_setup.verification.checks import CheckResult
 from ai_setup.workflow import Workflow
-from tests.helpers import FakeRunner
+from tests.helpers import FakeRunner, controlled_executable_lookup
 
 
 def response_for(package: Package, installed: bool) -> tuple[tuple[str, ...], CommandResult] | None:
@@ -33,6 +33,14 @@ def response_for(package: Package, installed: bool) -> tuple[tuple[str, ...], Co
 
 class StateAndUxTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.enterContext(
+            controlled_executable_lookup(
+                {
+                    "flatpak": "/usr/bin/flatpak",
+                    "yay": "/usr/bin/yay",
+                }
+            )
+        )
         self.catalog = load_catalog()
         self.packages = tuple(sorted((*self.catalog.apps, *self.catalog.deps)))
 

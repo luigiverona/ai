@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import stat
-import subprocess
-import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from ai_setup.cli import main
 from ai_setup.execution.runner import Command, CommandResult
 from ai_setup.models import Package, PackageKind, Source
 from ai_setup.packages.managers import flathub_readiness, yay_readiness
 from ai_setup.planning.state import StateInspector
-from tests.helpers import FakeRunner
+from tests.helpers import FakeRunner, controlled_executable_lookup
 
 
 def filesystem_snapshot(root: Path) -> tuple[tuple[object, ...], ...]:
@@ -78,6 +79,16 @@ class InspectionNonMutationTests(unittest.TestCase):
         ("codex", "codex", "--dry-run"),
         ("status", "status"),
     )
+
+    def setUp(self) -> None:
+        self.enterContext(
+            controlled_executable_lookup(
+                {
+                    "flatpak": "/usr/bin/flatpak",
+                    "yay": "/usr/bin/yay",
+                }
+            )
+        )
 
     def _fake_commands(self, root: Path, *, provider_ready: bool) -> Path:
         binary_root = root / "bin"
@@ -155,15 +166,17 @@ exit 1
                     "XDG_STATE_HOME",
                 ):
                     environment.pop(variable, None)
-                result = subprocess.run(
-                    (sys.executable, "-m", "ai_setup", *arguments),
-                    cwd=repository,
-                    env=environment,
-                    text=True,
-                    capture_output=True,
-                    check=False,
+                with (
+                    patch.dict(os.environ, environment, clear=True),
+                    patch("ai_setup.workflow.validate_system"),
+                    redirect_stdout(output := io.StringIO()),
+                ):
+                    returncode = main(list(arguments))
+                self.assertEqual(
+                    returncode,
+                    1 if label == "status" else 0,
+                    output.getvalue(),
                 )
-                self.assertEqual(result.returncode, 1 if label == "status" else 0, result.stderr)
                 self.assertEqual(filesystem_snapshot(home), before)
                 self.assertFalse((root / "unexpected-persistent-probe").exists())
 
@@ -196,6 +209,26 @@ exit 1
             self.assertEqual(command.env["HOME"], str(home))
             self.assertNotEqual(command.env["XDG_CACHE_HOME"], str(home / ".cache"))
             self.assertNotEqual(command.env["XDG_CONFIG_HOME"], str(home / ".config"))
+
+    def test_yay_provider_result_does_not_depend_on_host_path(self) -> None:
+        dependency = ("pacman", "-T", "yay")
+        owner = ("pacman", "-Qo", "--", "/usr/bin/yay")
+        version = ("/usr/bin/yay", "--version")
+        responses = {
+            dependency: CommandResult(dependency, 0, "", ""),
+            owner: CommandResult(owner, 0, "yay owns /usr/bin/yay\n", ""),
+            version: CommandResult(version, 0, "yay v13.0.1\n", ""),
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            for host_path in ("", str(Path(raw) / "unrelated-bin")):
+                with self.subTest(host_path=host_path), patch.dict(os.environ, {"PATH": host_path}):
+                    runner = FakeRunner(responses)
+                    state = yay_readiness(runner, Path(raw))  # type: ignore[arg-type]
+                    self.assertTrue(state.ready)
+                    self.assertEqual(
+                        tuple(command.argv for command in runner.commands),
+                        (dependency, owner, version),
+                    )
 
     def test_absent_unowned_and_broken_yay_providers_fail_closed(self) -> None:
         dependency = ("pacman", "-T", "yay")

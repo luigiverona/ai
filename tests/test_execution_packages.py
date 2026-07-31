@@ -23,7 +23,7 @@ from ai_setup.packages.aur_source import (
     tracked_tree_sha256,
 )
 from ai_setup.packages.managers import AurManager, FlatpakManager, PacmanManager
-from tests.helpers import FakeRunner
+from tests.helpers import FakeRunner, controlled_executable_lookup
 
 
 class ExecutionTests(unittest.TestCase):
@@ -378,7 +378,8 @@ class ExecutionTests(unittest.TestCase):
                 ),
             }
             runner = FakeRunner(responses)
-            AurManager(runner, workspace, system_config).bootstrap_yay()  # type: ignore[arg-type]
+            with controlled_executable_lookup({"yay": "/usr/bin/yay"}):
+                AurManager(runner, workspace, system_config).bootstrap_yay()  # type: ignore[arg-type]
             commands = [command.argv for command in runner.commands]
             self.assertEqual(
                 commands[:4],
