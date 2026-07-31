@@ -243,7 +243,12 @@ def replace_managed_file(
             and existing_policy is ExistingFilePolicy.EXACT_CONTENT
             and current.content != desired
         ):
-            raise _error(target, "replace", "existing file is not recognized as managed")
+            raise _error(
+                target,
+                "replace",
+                "the path exists but is not recognized as managed by ai; "
+                "it was left unchanged; inspect the path and resolve the collision",
+            )
         if current is not None and current.content == desired and current.mode == mode:
             return False
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)

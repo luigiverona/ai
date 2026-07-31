@@ -64,6 +64,13 @@ pre-mutation package state. Successful readiness is rendered through the same pr
 used by status. An interruption reports the current stage, completed work, and remaining
 stages so rerunning can safely re-inspect current state.
 
+User output uses plain section headings with one blank line between major sections.
+Plans describe intended actions; stage headings identify current execution. Expected
+failures report the failed stage, preserved earlier stages, stages that did not run, and
+the narrowest safe rerun command. Expected cancellation returns 130 without a traceback
+or a false completion message. Output remains line-oriented and deterministic in TTY and
+redirected environments, without cursor control, progress glyphs, or color-only meaning.
+
 ## Readiness
 
 `ReadinessVerifier` is the single readiness orchestrator for setup and status. Its scope
@@ -204,7 +211,10 @@ Codex launcher files require their precise managed content.
 `ssh-keygen`, Git, GitHub CLI, Codex authentication, and package managers continue to
 own their respective output formats. Temporary AUR configuration and diagnostic logs
 remain scoped to the private workspace rather than being treated as persistent managed
-configuration. Atomic replacement prevents partial-file visibility, but concurrent
+configuration. An unrecognized dedicated path is never adopted or replaced. The error
+names the exact path, confirms that it was left unchanged, and directs the user to
+inspect and resolve the collision before rerunning the focused stage. File contents are
+not printed. Atomic replacement prevents partial-file visibility, but concurrent
 valid writers otherwise have last-completed-write semantics.
 
 ## Identity and paths

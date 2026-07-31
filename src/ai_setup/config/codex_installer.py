@@ -38,6 +38,7 @@ def verify_codex_installer(
     content_type: str,
     reported_size: int,
     provenance: CodexInstallerProvenance = TRUSTED_CODEX_INSTALLER,
+    verbose: bool = False,
 ) -> str:
     parsed = urlparse(effective_url)
     if parsed.scheme != "https" or parsed.hostname not in provenance.approved_hosts:
@@ -51,10 +52,17 @@ def verify_codex_installer(
         raise ValidationError("codex", "verify official installer", "invalid installer interpreter")
     digest = hashlib.sha256(content).hexdigest()
     if digest != provenance.sha256:
+        detail = ""
+        if verbose:
+            detail = (
+                f"; expected SHA-256 {provenance.sha256}; actual SHA-256 {digest}; "
+                f"source {provenance.canonical_url}; audited upstream commit "
+                f"{provenance.upstream_commit}"
+            )
         raise ValidationError(
             "codex",
             "verify official installer",
             "installer differs from the audited version; no installer was executed; "
-            "ai requires a reviewed update",
+            f"ai requires a reviewed release before continuing{detail}",
         )
     return digest

@@ -38,7 +38,7 @@ mypy tools
 bash -n bootstrap/install.in
 shellcheck bootstrap/install.in
 actionlint
-python tools/build_release.py --tag v1.0.1 --check-only
+python tools/build_release.py --tag v1.0.2 --check-only
 git diff --check
 ```
 
@@ -58,6 +58,11 @@ available in a particular local environment. Report every unavailable check.
 
 Preserve user-owned data and existing workstation behavior unless a change explicitly
 defines and tests a new contract.
+
+User-visible output changes require deterministic transcript coverage. Test headings,
+major-section spacing, prompts, focused recovery commands, partial failures, expected
+interruptions, TTY and redirected output, and verbose redaction. Keep assertions focused
+on intentional interaction contracts rather than incidental wrapping.
 
 ## Commit and pull request expectations
 

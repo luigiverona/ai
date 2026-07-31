@@ -83,7 +83,7 @@ class RuntimeDefinitionTests(unittest.TestCase):
         workflow._render_plan(())
         self.assertEqual(
             lines[1 : 1 + len(STAGE_SPECS)],
-            [f"{spec.plan_label}." for spec in STAGE_SPECS],
+            [workflow_module.PLAN_ACTIONS[spec.stage] for spec in STAGE_SPECS],
         )
         for spec in STAGE_SPECS:
             with self.subTest(stage=spec.stage):
@@ -92,7 +92,7 @@ class RuntimeDefinitionTests(unittest.TestCase):
                 workflow.progress = WorkflowProgress((spec.stage,), current=spec.stage)
                 workflow._render_interruption()
                 self.assertIn(
-                    f"Setup paused during {spec.interruption_label}.",
+                    f"Setup interrupted during {spec.stage.value}.",
                     interrupted,
                 )
 

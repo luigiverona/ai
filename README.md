@@ -104,12 +104,13 @@ ruff format --check .
 mypy src
 mypy tools
 bash -n bootstrap/install.in
-python tools/build_release.py --tag v1.0.1 --check-only
+python tools/build_release.py --tag v1.0.2 --check-only
 git diff --check
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for change discipline and
-[docs/design.md](docs/design.md) for the maintainer architecture.
+[docs/design.md](docs/design.md) for the maintainer architecture. Recovery guidance is
+in [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## License
 

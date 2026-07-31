@@ -423,7 +423,7 @@ class StateAndUxTests(unittest.TestCase):
             output,
             [
                 "",
-                "Setup complete.",
-                "Workstation ready.",
+                "Command complete.",
+                "Selected configuration is ready.",
             ],
         )

@@ -145,6 +145,7 @@ class CodexManager:
                 content_type=metadata[1],
                 reported_size=int(metadata[2]),
                 provenance=self.installer_provenance,
+                verbose=bool(getattr(self.runner, "verbose", False)),
             )
         self.runner.run(Command(("sh", str(installer)), env=env, replace_env=True))
         if not self.runner.dry_run and not self.shared_bin.is_file():

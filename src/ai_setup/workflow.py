@@ -39,6 +39,27 @@ SOURCE_LABELS = {
     Source.UPSTREAM: "the official upstream release",
 }
 
+PLAN_ACTIONS = {
+    WorkflowStage.ADMINISTRATOR: "Request administrator access.",
+    WorkflowStage.SYSTEM: "Update Arch Linux.",
+    WorkflowStage.APPLICATIONS: "Install or verify applications.",
+    WorkflowStage.FLATPAK: "Configure or verify Flatpak and Flathub.",
+    WorkflowStage.GIT: "Configure or verify Git.",
+    WorkflowStage.GITHUB: "Configure or verify GitHub access.",
+    WorkflowStage.SSH: "Configure or verify GitHub SSH access.",
+    WorkflowStage.CODEX: "Configure or verify both Codex profiles.",
+    WorkflowStage.SHELL: "Configure or verify the shell PATH.",
+    WorkflowStage.VERIFICATION: "Verify the selected workstation state.",
+}
+
+FOCUSED_COMMANDS = {
+    Capability.APPS: "apps",
+    Capability.GIT: "git",
+    Capability.GITHUB: "github",
+    Capability.SSH: "ssh",
+    Capability.CODEX: "codex",
+}
+
 
 class Workflow:
     def __init__(
@@ -157,7 +178,7 @@ class Workflow:
     def _render_plan(self, pending: tuple[Package, ...]) -> None:
         self.terminal.section("Plan")
         for stage in self.progress.selected:
-            self.terminal.output(f"{stage_spec(stage).plan_label}.")
+            self.terminal.output(PLAN_ACTIONS[stage])
         applications = set(self._applications())
         source_order = {Source.PACMAN: 0, Source.AUR: 1, Source.FLATPAK: 2, Source.UPSTREAM: 3}
         missing = tuple(
@@ -528,31 +549,80 @@ class Workflow:
 
     def _render_completion(self) -> None:
         self.terminal.output("")
-        self.terminal.output("Setup complete.")
-        self.terminal.output("Workstation ready.")
+        if set(self.plan.selected) == set(Capability):
+            self.terminal.output("Setup complete.")
+            self.terminal.output("Workstation ready.")
+        else:
+            self.terminal.output("Command complete.")
+            self.terminal.output("Selected configuration is ready.")
+
+    def _rerun_command(self, stage: WorkflowStage | None = None) -> str:
+        stage_commands = {
+            WorkflowStage.APPLICATIONS: "apps",
+            WorkflowStage.GIT: "git",
+            WorkflowStage.GITHUB: "github",
+            WorkflowStage.SSH: "ssh",
+            WorkflowStage.CODEX: "codex",
+        }
+        if stage in stage_commands:
+            return f"{IDENTITY.command_name} {stage_commands[stage]}"
+        if len(self.plan.selected) == 1:
+            command = FOCUSED_COMMANDS.get(self.plan.selected[0])
+            if command is not None:
+                return f"{IDENTITY.command_name} {command}"
+        return f"{IDENTITY.command_name} setup"
+
+    def _later_stages(self, current: WorkflowStage | None) -> tuple[WorkflowStage, ...]:
+        if current is None or current not in self.progress.selected:
+            return self.progress.remaining
+        index = self.progress.selected.index(current)
+        return tuple(
+            stage
+            for stage in self.progress.selected[index + 1 :]
+            if stage not in self.progress.completed
+        )
+
+    def _render_progress_summary(self, current: WorkflowStage | None, *, interrupted: bool) -> None:
+        self.terminal.output("")
+        if current is None:
+            self.terminal.output(
+                "Setup was interrupted before any stage ran."
+                if interrupted
+                else "Setup stopped before any stage ran."
+            )
+        else:
+            verb = "interrupted during" if interrupted else "stopped at"
+            self.terminal.output(f"Setup {verb} {current.value}.")
+        if self.progress.completed:
+            labels = [stage.value for stage in self.progress.completed]
+            self.terminal.output(f"Earlier completed stages remain valid: {self._join(labels)}.")
+        else:
+            self.terminal.output("No earlier stages completed.")
+        later = self._later_stages(current)
+        if later:
+            self.terminal.output(
+                "Later stages did not run: " + self._join([stage.value for stage in later]) + "."
+            )
+        else:
+            self.terminal.output("No later stages ran.")
+        command = self._rerun_command(current)
+        if interrupted:
+            self.terminal.output(f"Run {command} to continue.")
+        else:
+            self.terminal.output(f"Resolve the reported problem, then run {command}.")
+            self.terminal.output(f"Run {command} --verbose for diagnostic output.")
 
     def _render_interruption(self) -> None:
-        current = self.progress.current or next(iter(self.progress.remaining), None)
-        if current is not None:
+        if (
+            self.progress.current is None
+            and not self.progress.completed
+            and not self.progress.mutation_started
+        ):
             self.terminal.output("")
-            self.terminal.output(f"Setup paused during {stage_spec(current).interruption_label}.")
-        if self.progress.completed:
-            completed = [
-                stage_spec(stage).resume_sentence(first=index == 0)
-                for index, stage in enumerate(self.progress.completed)
-            ]
-            self.terminal.output(f"Completed: {self._join(completed)}.")
-        remaining = [
-            stage_spec(stage).resume_sentence(first=index == 0)
-            for index, stage in enumerate(self.progress.remaining)
-        ]
-        if remaining:
-            self.terminal.output(f"Remaining: {self._join(remaining)}.")
-        if self.progress.completed or self.progress.mutation_started:
-            self.terminal.output("Completed changes were preserved.")
-        else:
-            self.terminal.output("No setup stages were completed.")
-        self.terminal.output(f"Run {IDENTITY.command_name} again to continue.")
+            self.terminal.output("Setup cancelled. No changes were made.")
+            self.terminal.output(f"Run {self._rerun_command()} to try again.")
+            return
+        self._render_progress_summary(self.progress.current, interrupted=True)
 
     def _render_error(self, error: ApplicationError) -> None:
         if error.packages:
@@ -565,8 +635,11 @@ class Workflow:
             self.terminal.output(f"Reason: {error.reason.rstrip('.')}.")
             if error.log_path:
                 self.terminal.output(f"Details: {error.log_path}.")
+        else:
             self.terminal.output(
-                f"Run {IDENTITY.command_name} --verbose for complete command output."
+                f"{error.component.rstrip('.')} failed while trying to {error.operation}: "
+                f"{error.reason.rstrip('.')}."
             )
-            return
-        self.terminal.error(error.component, error.operation, error.reason, error.log_path)
+            if error.log_path:
+                self.terminal.output(f"Details: {error.log_path}.")
+        self._render_progress_summary(self.progress.current, interrupted=False)

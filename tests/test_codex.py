@@ -227,6 +227,35 @@ class CodexTests(unittest.TestCase):
                     provenance=provenance,
                 )
 
+    def test_checksum_mismatch_output_is_actionable_and_verbose_details_are_safe(self) -> None:
+        trusted = b"#!/bin/sh\nprintf fixture\\n"
+        changed = trusted + b"x"
+        provenance = replace(
+            TRUSTED_CODEX_INSTALLER,
+            sha256=hashlib.sha256(trusted).hexdigest(),
+        )
+        common = {
+            "effective_url": "https://releases.openai.com/codex/install.sh",
+            "content_type": "text/x-sh",
+            "reported_size": len(changed),
+            "provenance": provenance,
+        }
+        with self.assertRaises(ValidationError) as normal:
+            verify_codex_installer(changed, **common)
+        self.assertIn("no installer was executed", normal.exception.reason)
+        self.assertIn("requires a reviewed release", normal.exception.reason)
+        self.assertNotIn(provenance.sha256, normal.exception.reason)
+
+        with self.assertRaises(ValidationError) as verbose:
+            verify_codex_installer(changed, verbose=True, **common)
+        self.assertIn(f"expected SHA-256 {provenance.sha256}", verbose.exception.reason)
+        self.assertIn(
+            f"actual SHA-256 {hashlib.sha256(changed).hexdigest()}",
+            verbose.exception.reason,
+        )
+        self.assertIn(provenance.canonical_url, verbose.exception.reason)
+        self.assertIn(provenance.upstream_commit, verbose.exception.reason)
+
     def test_oversized_installer_is_rejected(self) -> None:
         trusted = b"#!/bin/sh\n"
         provenance = replace(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ from unittest.mock import Mock, patch
 
 from ai_setup.catalog.loader import load_catalog
 from ai_setup.cli import main
+from ai_setup.cli import parser as cli_parser
 from ai_setup.config.codex import CodexManager
 from ai_setup.config.ssh_inventory import SSHInventory
 from ai_setup.errors import CommandError, ValidationError
@@ -140,16 +142,16 @@ class OutputTranscriptTests(unittest.TestCase):
         self.assertEqual(
             transcript.text,
             "Plan\n"
-            "Administrator access.\n"
-            "System update.\n"
-            "Applications.\n"
-            "Flatpak.\n"
-            "Git.\n"
-            "GitHub.\n"
-            "SSH.\n"
-            "Codex.\n"
-            "Shell PATH.\n"
-            "Verification.\n\n"
+            "Request administrator access.\n"
+            "Update Arch Linux.\n"
+            "Install or verify applications.\n"
+            "Configure or verify Flatpak and Flathub.\n"
+            "Configure or verify Git.\n"
+            "Configure or verify GitHub access.\n"
+            "Configure or verify GitHub SSH access.\n"
+            "Configure or verify both Codex profiles.\n"
+            "Configure or verify the shell PATH.\n"
+            "Verify the selected workstation state.\n\n"
             "Missing application: Mullvad Browser from the AUR.\n"
             "Fourteen of fifteen software requirements are already present.\n",
         )
@@ -187,10 +189,11 @@ class OutputTranscriptTests(unittest.TestCase):
         workflow._render_plan(())
         self.assertEqual(
             transcript.text,
-            "Plan\nGit.\nGitHub.\nVerification.\n\n"
+            "Plan\nConfigure or verify Git.\nConfigure or verify GitHub access.\n"
+            "Verify the selected workstation state.\n\n"
             "All software requirements are already present.\n",
         )
-        self.assertNotIn("Administrator access.", transcript.text)
+        self.assertNotIn("administrator access", transcript.text)
 
     def test_reported_mostly_ready_interruption_transcript(self) -> None:
         transcript = Transcript(("y", "y"))
@@ -231,8 +234,11 @@ class OutputTranscriptTests(unittest.TestCase):
         self.assertEqual(status, 130)
         self.assertEqual(
             transcript.text,
-            "Plan\nAdministrator access.\nSystem update.\nApplications.\nFlatpak.\n"
-            "Git.\nGitHub.\nSSH.\nCodex.\nShell PATH.\nVerification.\n\n"
+            "Plan\nRequest administrator access.\nUpdate Arch Linux.\n"
+            "Install or verify applications.\nConfigure or verify Flatpak and Flathub.\n"
+            "Configure or verify Git.\nConfigure or verify GitHub access.\n"
+            "Configure or verify GitHub SSH access.\nConfigure or verify both Codex profiles.\n"
+            "Configure or verify the shell PATH.\nVerify the selected workstation state.\n\n"
             "Missing application: Mullvad Browser from the AUR.\n"
             "Fourteen of fifteen software requirements are already present.\n\n"
             "Continue? [y/N] y\n\n"
@@ -248,10 +254,11 @@ class OutputTranscriptTests(unittest.TestCase):
             "SSH\nThe dedicated key already exists.\nThe key is registered with GitHub.\n"
             "The GitHub connection was verified.\nExisting SSH keys were preserved.\n\n"
             "Codex\ncodex-01 is not signed in.\nStarting sign-in for codex-01...\n\n"
-            "Setup paused during Codex configuration.\n"
-            "Completed: Administrator access, system update, applications, Flatpak, Git, GitHub, and SSH.\n"
-            "Remaining: Codex, shell PATH, and verification.\n"
-            "Completed changes were preserved.\nRun ai again to continue.",
+            "Setup interrupted during Codex.\n"
+            "Earlier completed stages remain valid: Administrator access, System update, "
+            "Applications, Flatpak, Git, GitHub, and SSH.\n"
+            "Later stages did not run: Shell PATH and Verification.\n"
+            "Run ai codex to continue.",
         )
 
     def test_interruption_before_any_completed_stage(self) -> None:
@@ -263,10 +270,51 @@ class OutputTranscriptTests(unittest.TestCase):
         workflow._render_interruption()
         self.assertEqual(
             transcript.text,
-            "\nSetup paused during administrator access.\n"
-            "Remaining: Administrator access, system update, applications, Flatpak, Git, GitHub, SSH, Codex, shell PATH, and verification.\n"
-            "No setup stages were completed.\nRun ai again to continue.",
+            "\nSetup interrupted during Administrator access.\n"
+            "No earlier stages completed.\n"
+            "Later stages did not run: System update, Applications, Flatpak, Git, GitHub, "
+            "SSH, Codex, Shell PATH, and Verification.\n"
+            "Run ai setup to continue.",
         )
+
+    def test_ctrl_c_before_confirmation_has_no_false_stage_or_success(self) -> None:
+        transcript = Transcript()
+
+        def interrupt(_: str) -> str:
+            raise KeyboardInterrupt
+
+        workflow = Workflow(
+            self.complete_plan,
+            RunOptions(dry_run=False, home=Path("/tmp/ai-transcript-home")),
+            Terminal(input_fn=interrupt, output=transcript.output),
+            runner=FakeRunner(),  # type: ignore[arg-type]
+        )
+        with patch("ai_setup.workflow.validate_system"):
+            status = workflow.run()
+        self.assertEqual(status, 130)
+        self.assertIn("Setup cancelled. No changes were made.", transcript.text)
+        self.assertIn("Run ai setup to try again.", transcript.text)
+        self.assertNotIn("Setup complete", transcript.text)
+
+    def test_eof_at_confirmation_declines_without_mutation(self) -> None:
+        transcript = Transcript()
+
+        def ended(_: str) -> str:
+            raise EOFError
+
+        runner = FakeRunner()
+        workflow = Workflow(
+            self.complete_plan,
+            RunOptions(home=Path("/tmp/ai-transcript-home")),
+            Terminal(input_fn=ended, output=transcript.output),
+            runner=runner,  # type: ignore[arg-type]
+        )
+        with patch("ai_setup.workflow.validate_system"):
+            status = workflow.run()
+        self.assertEqual(status, 0)
+        self.assertIn("Input ended; confirmation declined.", transcript.text)
+        self.assertTrue(transcript.text.endswith("No changes were made."))
+        self.assertFalse(any(command.mutate for command in runner.commands))
 
     def test_successful_verification_and_completion_transcript(self) -> None:
         transcript = Transcript()
@@ -301,9 +349,10 @@ class OutputTranscriptTests(unittest.TestCase):
         self.assertEqual(
             transcript.text,
             "Verification\nThe Git identity is ready.\nGitHub authentication is ready.\n"
-            "All verification checks passed.\n\nSetup complete.\nWorkstation ready.",
+            "All verification checks passed.\n\nCommand complete.\n"
+            "Selected configuration is ready.",
         )
-        self.assertEqual(transcript.lines[-1], "Workstation ready.")
+        self.assertEqual(transcript.lines[-1], "Selected configuration is ready.")
 
     def test_representative_package_failure_transcript(self) -> None:
         transcript = Transcript()
@@ -328,7 +377,11 @@ class OutputTranscriptTests(unittest.TestCase):
             "Mullvad Browser could not be installed.\n"
             "Reason: makepkg exited with status 1.\n"
             "Details: /tmp/ai-test/logs/aur.log.\n"
-            "Run ai --verbose for complete command output.",
+            "\nSetup stopped at Applications.\n"
+            "No earlier stages completed.\n"
+            "Later stages did not run: Verification.\n"
+            "Resolve the reported problem, then run ai apps.\n"
+            "Run ai apps --verbose for diagnostic output.",
         )
 
     def test_new_git_identity_transcript(self) -> None:
@@ -576,6 +629,28 @@ class OutputTranscriptTests(unittest.TestCase):
         for forbidden in ("[01/", "Step 1", "1. Applications", "---", "✓", "█"):
             self.assertNotIn(forbidden, transcript.text)
 
+    def test_help_is_plain_and_deterministic_at_representative_widths(self) -> None:
+        catalog = load_catalog()
+        root = cli_parser(catalog)
+        baseline = root.format_help()
+        choices = root._subparsers._group_actions[0].choices  # type: ignore[union-attr]
+        for width in (60, 80, 120, None):
+            with (
+                self.subTest(width=width),
+                patch(
+                    "shutil.get_terminal_size",
+                    side_effect=OSError if width is None else None,
+                    return_value=None if width is None else os.terminal_size((width, 24)),
+                ),
+            ):
+                self.assertEqual(cli_parser(catalog).format_help(), baseline)
+        for command, command_parser in choices.items():
+            with self.subTest(command=command):
+                rendered = command_parser.format_help()
+                self.assertNotRegex(rendered, r"\x1b\[[0-9;]*[A-Za-z]")
+                self.assertNotIn("✓", rendered)
+                self.assertNotIn("│", rendered)
+
     def test_normal_cli_has_no_banner_and_version_remains_available(self) -> None:
         output = io.StringIO()
 
@@ -589,7 +664,7 @@ class OutputTranscriptTests(unittest.TestCase):
         self.assertEqual(status, 0)
         rendered = output.getvalue()
         self.assertTrue(rendered.startswith("Plan\n"))
-        for forbidden in ("ai 1.0.1", "\nArch Linux\n", "Shell:", "Step 1", "[01/", "Password:"):
+        for forbidden in ("ai 1.0.2", "\nArch Linux\n", "Shell:", "Step 1", "[01/", "Password:"):
             self.assertNotIn(forbidden, rendered)
         version = subprocess.run(
             (sys.executable, "-m", "ai_setup", "--version"),
@@ -598,4 +673,4 @@ class OutputTranscriptTests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
-        self.assertEqual(version.stdout, "ai 1.0.1\n")
+        self.assertEqual(version.stdout, "ai 1.0.2\n")

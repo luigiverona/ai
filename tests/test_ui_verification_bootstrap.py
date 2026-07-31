@@ -36,6 +36,21 @@ class UiVerificationBootstrapTests(unittest.TestCase):
         self.assertTrue(terminal.confirm("Keep?", default=True))
         self.assertFalse(terminal.confirm("Delete?", default=False))
 
+    def test_confirmation_retries_invalid_input_and_declines_eof(self) -> None:
+        answers = iter(("maybe", "YES"))
+        output: list[str] = []
+        terminal = Terminal(input_fn=lambda _: next(answers), output=output.append)
+        self.assertTrue(terminal.confirm("Continue?"))
+        self.assertEqual(output, ["Please answer yes or no."])
+
+        def ended(_: str) -> str:
+            raise EOFError
+
+        output.clear()
+        terminal = Terminal(input_fn=ended, output=output.append)
+        self.assertFalse(terminal.confirm("Continue?"))
+        self.assertEqual(output, ["Input ended; confirmation declined."])
+
     def test_package_failure_is_compact_and_actionable(self) -> None:
         output: list[str] = []
         Terminal(output=output.append).error(

@@ -91,6 +91,10 @@ Temporary workspace cleanup verifies containment and the project-owned prefix be
 removal. Unrelated files are preserved by default and are not adopted merely because
 their names resemble managed files.
 
+When a dedicated managed path already contains unrecognized data, setup refuses the
+replacement, leaves the path unchanged, and reports the collision for manual inspection.
+It does not infer ownership from the filename or suggest an automatic destructive fix.
+
 The bootstrap recognizes its installation root, launcher, and dedicated fish file only
 through exact ownership markers on user-owned regular paths. It compares an existing
 same-version tree with the checksum-verified extraction by type, mode, and file digest.

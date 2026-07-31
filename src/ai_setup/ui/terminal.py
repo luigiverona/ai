@@ -30,10 +30,19 @@ class Terminal:
         if assume_yes and not destructive:
             return True
         suffix = " [Y/n] " if default else " [y/N] "
-        answer = self.input(prompt + suffix).strip().lower()
-        if not answer:
-            return default
-        return answer in {"y", "yes"}
+        while True:
+            try:
+                answer = self.input(prompt + suffix).strip().lower()
+            except EOFError:
+                self.output("Input ended; confirmation declined.")
+                return False
+            if not answer:
+                return default
+            if answer in {"y", "yes"}:
+                return True
+            if answer in {"n", "no"}:
+                return False
+            self.output("Please answer yes or no.")
 
     def error(
         self,

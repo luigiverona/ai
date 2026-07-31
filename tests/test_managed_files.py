@@ -218,7 +218,10 @@ class ManagedFileTests(unittest.TestCase):
             target = home / "managed"
             target.write_text("unrelated\n")
             before = (target.read_bytes(), target.stat().st_mode, target.stat().st_ino)
-            with self.assertRaisesRegex(ValidationError, "not recognized as managed"):
+            with self.assertRaisesRegex(
+                ValidationError,
+                "not recognized as managed by ai; it was left unchanged; inspect the path",
+            ):
                 self.replace(
                     home,
                     target,
