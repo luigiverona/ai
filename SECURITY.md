@@ -30,9 +30,13 @@ The following remain external trust boundaries:
 - GitHub authentication, Releases, and repository services; and
 - OpenAI's Codex distribution infrastructure.
 
-The official Codex installer script is accepted only when its SHA-256 matches the digest
-reviewed in the source. A changed upstream installer fails closed until that digest is
-reviewed and updated.
+The official Codex installer script is accepted only when its exact bytes, HTTPS
+redirect destination, bounded size, media type, interpreter, and SHA-256 match the
+provenance reviewed in the source. The provenance records the canonical endpoint,
+approved hosts, official repository path, exact upstream commit, audit date, and digest.
+A changed upstream installer fails closed before execution. Maintainers compare served
+bytes with that exact official source revision and review the complete upstream diff;
+the audit tool reports evidence but never updates trust data automatically.
 
 The `yay-bin` bootstrap fetches one exact commit from the official AUR Git repository.
 Before `makepkg` runs, the checkout must match its expected origin, commit, tracked entry

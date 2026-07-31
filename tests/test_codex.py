@@ -3,17 +3,24 @@ from __future__ import annotations
 import hashlib
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 from ai_setup.config.codex import CodexManager
+from ai_setup.config.codex_installer import (
+    TRUSTED_CODEX_INSTALLER,
+    CodexInstallerProvenance,
+    verify_codex_installer,
+)
 from ai_setup.errors import CommandError, ValidationError
 from ai_setup.execution.runner import Command, CommandResult
 from tests.helpers import FakeRunner
+from tools.audit_codex_installer import audit
 
 
 class InstallingRunner(FakeRunner):
-    INSTALLER = b"audited installer"
+    INSTALLER = b"#!/bin/sh\nprintf controlled-fixture\\n"
 
     def __init__(self, shared: Path) -> None:
         super().__init__()
@@ -24,6 +31,12 @@ class InstallingRunner(FakeRunner):
         if command.argv[0] == "curl":
             output = Path(command.argv[command.argv.index("-o") + 1])
             output.write_bytes(self.INSTALLER)
+            return CommandResult(
+                command.argv,
+                0,
+                f"https://releases.openai.com/codex/install.sh\ntext/x-sh\n{len(self.INSTALLER)}\n",
+                "",
+            )
         if command.argv[0] == "sh":
             isolated_home = Path(command.env["HOME"])
             shell = command.env["SHELL"]
@@ -34,6 +47,10 @@ class InstallingRunner(FakeRunner):
             self.shared.write_text("binary", encoding="utf-8")
             self.shared.chmod(0o700)
         return result
+
+
+def fixture_provenance(content: bytes) -> CodexInstallerProvenance:
+    return replace(TRUSTED_CODEX_INSTALLER, sha256=hashlib.sha256(content).hexdigest())
 
 
 class CodexTests(unittest.TestCase):
@@ -70,10 +87,14 @@ class CodexTests(unittest.TestCase):
             home = Path(raw)
             workspace = home / "workspace"
             (workspace / "downloads").mkdir(parents=True)
-            manager = CodexManager(FakeRunner(), home, workspace)  # type: ignore[arg-type]
-            runner = InstallingRunner(manager.shared_bin)
-            manager.runner = runner  # type: ignore[assignment]
-            manager.INSTALLER_SHA256 = hashlib.sha256(runner.INSTALLER).hexdigest()
+            runner = InstallingRunner(home / "placeholder")
+            manager = CodexManager(
+                runner,
+                home,
+                workspace,
+                installer_provenance=fixture_provenance(runner.INSTALLER),
+            )
+            runner.shared = manager.shared_bin
             startup_files = [
                 home / ".bashrc",
                 home / ".bash_profile",
@@ -113,10 +134,15 @@ class CodexTests(unittest.TestCase):
             home = Path(raw)
             workspace = home / "workspace"
             (workspace / "downloads").mkdir(parents=True)
-            manager = CodexManager(FakeRunner(), home, workspace)  # type: ignore[arg-type]
-            runner = InstallingRunner(manager.shared_bin)
-            manager.runner = runner  # type: ignore[assignment]
-            manager.INSTALLER_SHA256 = hashlib.sha256(runner.INSTALLER).hexdigest()
+            shared = home / ".local/share/ai/codex/installer/bin/codex"
+            runner = InstallingRunner(shared)
+            manager = CodexManager(
+                runner,
+                home,
+                workspace,
+                installer_provenance=fixture_provenance(runner.INSTALLER),
+            )
+            runner.shared = manager.shared_bin
             watched = (
                 home / ".bashrc",
                 home / ".bash_profile",
@@ -152,9 +178,89 @@ class CodexTests(unittest.TestCase):
             (workspace / "downloads").mkdir(parents=True)
             runner = InstallingRunner(home / "never-created")
             manager = CodexManager(runner, home, workspace)  # type: ignore[arg-type]
-            with self.assertRaisesRegex(ValidationError, "installer checksum mismatch"):
+            with self.assertRaisesRegex(ValidationError, "differs from the audited version"):
                 manager.install()
             self.assertFalse(manager.shared_bin.exists())
+
+    def test_exact_bytes_and_transport_policy_fail_closed(self) -> None:
+        trusted = b"#!/bin/sh\nprintf fixture\\n"
+        provenance = replace(
+            TRUSTED_CODEX_INSTALLER,
+            sha256=hashlib.sha256(trusted).hexdigest(),
+            maximum_bytes=len(trusted),
+        )
+        self.assertEqual(
+            verify_codex_installer(
+                trusted,
+                effective_url="https://releases.openai.com/codex/install.sh",
+                content_type="text/x-sh",
+                reported_size=len(trusted),
+                provenance=provenance,
+            ),
+            provenance.sha256,
+        )
+        variants = (
+            trusted[:-1],
+            trusted + b"x",
+            trusted.replace(b"\n", b"\r\n"),
+            b"X" + trusted[1:],
+        )
+        for content in variants:
+            with self.subTest(content=content), self.assertRaises(ValidationError):
+                verify_codex_installer(
+                    content,
+                    effective_url="https://releases.openai.com/codex/install.sh",
+                    content_type="text/x-sh",
+                    reported_size=len(content),
+                    provenance=provenance,
+                )
+        for url in (
+            "http://releases.openai.com/codex/install.sh",
+            "https://example.com/install.sh",
+        ):
+            with self.subTest(url=url), self.assertRaises(ValidationError):
+                verify_codex_installer(
+                    trusted,
+                    effective_url=url,
+                    content_type="text/x-sh",
+                    reported_size=len(trusted),
+                    provenance=provenance,
+                )
+
+    def test_oversized_installer_is_rejected(self) -> None:
+        trusted = b"#!/bin/sh\n"
+        provenance = replace(
+            TRUSTED_CODEX_INSTALLER, sha256=hashlib.sha256(trusted).hexdigest(), maximum_bytes=4
+        )
+        with self.assertRaisesRegex(ValidationError, "size"):
+            verify_codex_installer(
+                trusted,
+                effective_url="https://releases.openai.com/codex/install.sh",
+                content_type="text/x-sh",
+                reported_size=len(trusted),
+                provenance=provenance,
+            )
+
+    def test_maintainer_audit_compares_source_without_execution(self) -> None:
+        served = b"#!/bin/sh\nprintf fixture\\n"
+        provenance = replace(TRUSTED_CODEX_INSTALLER, sha256=hashlib.sha256(served).hexdigest())
+        with patch("tools.audit_codex_installer.TRUSTED_CODEX_INSTALLER", provenance):
+            self.assertEqual(
+                audit(
+                    served,
+                    served,
+                    effective_url="https://releases.openai.com/codex/install.sh",
+                    content_type="text/x-sh",
+                ),
+                provenance.sha256,
+            )
+            with self.assertRaisesRegex(ValueError, "differs"):
+                audit(
+                    served,
+                    served + b"x",
+                    effective_url="https://releases.openai.com/codex/install.sh",
+                    content_type="text/x-sh",
+                )
 
     def test_profile_specific_login_and_status_commands(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

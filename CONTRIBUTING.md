@@ -38,7 +38,7 @@ mypy tools
 bash -n bootstrap/install.in
 shellcheck bootstrap/install.in
 actionlint
-python tools/build_release.py --tag v1.0.0 --check-only
+python tools/build_release.py --tag v1.0.1 --check-only
 git diff --check
 ```
 
@@ -89,6 +89,9 @@ The following require focused tests and explicit review:
 - SSH key eligibility and deletion;
 - GitHub and Codex authentication;
 - the pinned Codex installer digest;
+- the Codex installer's complete upstream diff, served-byte equality with the recorded
+  official OpenAI commit, redirect hosts, size and media bounds, exact-byte failure
+  fixtures, and the non-executing maintainer audit tool whenever its trust pin changes;
 - AUR clone, build, provider, and privilege policy; and
 - GitHub Actions workflows and permissions.
 

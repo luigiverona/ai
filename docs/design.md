@@ -172,6 +172,13 @@ the shared managed binary but set distinct `CODEX_HOME` directories. Installatio
 authentication, readiness, and isolation verification consume that same specification.
 An unrelated generic `~/.local/bin/codex` path is outside the managed surface.
 
+The official installer is a fail-closed external-code boundary. One provenance record
+defines its canonical HTTPS endpoint, permitted redirect hosts, maximum byte count,
+accepted shell media, exact official OpenAI source commit and path, audit date, and
+SHA-256. Downloaded bytes are never normalized and are executed only after every bound
+and the exact digest pass. A maintainer audit compares the served file with the pinned
+official source without executing it or changing the trusted digest automatically.
+
 ### Shell
 
 Shell detection targets an interactive fish, Bash, or Zsh session, with the account's

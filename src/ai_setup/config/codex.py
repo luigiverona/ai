@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from ai_setup.config.codex_installer import (
+    TRUSTED_CODEX_INSTALLER,
+    CodexInstallerProvenance,
+    verify_codex_installer,
+)
 from ai_setup.config.files import (
     ExistingFilePolicy,
     ensure_managed_directory,
@@ -42,17 +46,21 @@ def codex_profile(identifier: str) -> CodexProfile:
 
 
 class CodexManager:
-    INSTALLER_URL = "https://chatgpt.com/codex/install.sh"
-    # Audited against the official installer on 2026-07-21. Upstream changes fail closed.
-    INSTALLER_SHA256 = "1154e9daf713aacd1534efca8042bfd6665ad24bc1d1dfd86b8f439fe60a7a5d"
-
-    def __init__(self, runner: CommandRunner, home: Path, workspace: Path | None = None) -> None:
+    def __init__(
+        self,
+        runner: CommandRunner,
+        home: Path,
+        workspace: Path | None = None,
+        *,
+        installer_provenance: CodexInstallerProvenance = TRUSTED_CODEX_INSTALLER,
+    ) -> None:
         self.runner = runner
         self.home = home
         self.state_root = IDENTITY.codex_state_root(home)
         self.bin_dir = home / ".local/bin"
         self.shared_bin = IDENTITY.codex_shared_binary(home)
         self.workspace = workspace
+        self.installer_provenance = installer_provenance
 
     def install(self) -> None:
         owner_uid = os.getuid()
@@ -103,29 +111,41 @@ class CodexManager:
                 env[name] = value
         download_root = self.workspace / "downloads" if self.workspace else installer_state
         installer = download_root / "codex-install.sh"
-        self.runner.run(
+        download = self.runner.run(
             Command(
                 (
                     "curl",
                     "-fsSL",
                     "--proto",
                     "=https",
+                    "--proto-redir",
+                    "=https",
                     "--tlsv1.2",
+                    "--max-redirs",
+                    "1",
+                    "--max-filesize",
+                    str(self.installer_provenance.maximum_bytes),
+                    "--write-out",
+                    "%{url_effective}\n%{content_type}\n%{size_download}\n",
                     "-o",
                     str(installer),
-                    self.INSTALLER_URL,
+                    self.installer_provenance.canonical_url,
                 )
             )
         )
         if not self.runner.dry_run:
-            digest = hashlib.sha256(installer.read_bytes()).hexdigest()
-            if digest != self.INSTALLER_SHA256:
+            metadata = download.stdout.splitlines()
+            if len(metadata) != 3 or not metadata[2].isdigit():
                 raise ValidationError(
-                    "codex",
-                    "verify official installer",
-                    f"installer checksum mismatch; {IDENTITY.command_name} must audit "
-                    "the upstream change",
+                    "codex", "verify official installer", "invalid download metadata"
                 )
+            verify_codex_installer(
+                installer.read_bytes(),
+                effective_url=metadata[0],
+                content_type=metadata[1],
+                reported_size=int(metadata[2]),
+                provenance=self.installer_provenance,
+            )
         self.runner.run(Command(("sh", str(installer)), env=env, replace_env=True))
         if not self.runner.dry_run and not self.shared_bin.is_file():
             raise ValidationError(

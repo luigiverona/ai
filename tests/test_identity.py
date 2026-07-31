@@ -95,11 +95,11 @@ class RuntimeIdentityTests(unittest.TestCase):
             RELEASE_IDENTITY.catalog_environment_variable, "AI_WORKSTATION_CATALOG_ROOT"
         )
         self.assertEqual(
-            RELEASE_IDENTITY.release_assets("1.0.0"),
+            RELEASE_IDENTITY.release_assets("1.0.1"),
             {
                 "install",
-                "ai-1.0.0.tar.gz",
-                "ai-1.0.0.tar.gz.sha256",
+                "ai-1.0.1.tar.gz",
+                "ai-1.0.1.tar.gz.sha256",
                 "SHA256SUMS",
             },
         )
@@ -129,7 +129,7 @@ class RuntimeIdentityTests(unittest.TestCase):
 
 class VersionResolutionTests(unittest.TestCase):
     def write_project(
-        self, root: Path, *, name: str = "ai-workstation", version: str = "1.0.0"
+        self, root: Path, *, name: str = "ai-workstation", version: str = "1.0.1"
     ) -> Path:
         package_file = root / "src/ai_setup/version.py"
         package_file.parent.mkdir(parents=True, exist_ok=True)
@@ -142,11 +142,11 @@ class VersionResolutionTests(unittest.TestCase):
 
     def test_pyproject_is_the_source_checkout_version(self) -> None:
         data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-        self.assertEqual(data["project"]["version"], "1.0.0")
-        self.assertEqual(project_version(Path.cwd()), "1.0.0")
-        self.assertEqual(resolve_version(), "1.0.0")
+        self.assertEqual(data["project"]["version"], "1.0.1")
+        self.assertEqual(project_version(Path.cwd()), "1.0.1")
+        self.assertEqual(resolve_version(), "1.0.1")
         self.assertNotIn(
-            '__version__ = "1.0.0"',
+            '__version__ = "1.0.1"',
             Path("src/ai_setup/__init__.py").read_text(encoding="utf-8"),
         )
 
@@ -156,7 +156,7 @@ class VersionResolutionTests(unittest.TestCase):
             metadata = Mock(return_value="9.9.9")
             self.assertEqual(
                 resolve_version(package_file=package_file, metadata_version=metadata),
-                "1.0.0",
+                "1.0.1",
             )
             metadata.assert_not_called()
 
@@ -165,10 +165,10 @@ class VersionResolutionTests(unittest.TestCase):
             package_file = Path(raw) / "site-packages/ai_setup/version.py"
             package_file.parent.mkdir(parents=True)
             package_file.write_text("# installed fixture\n", encoding="utf-8")
-            metadata = Mock(return_value="1.0.0")
+            metadata = Mock(return_value="1.0.1")
             self.assertEqual(
                 resolve_version(package_file=package_file, metadata_version=metadata),
-                "1.0.0",
+                "1.0.1",
             )
             metadata.assert_called_once_with("ai-workstation")
 
@@ -187,7 +187,7 @@ class VersionResolutionTests(unittest.TestCase):
             package_file = Path(raw) / "src/ai_setup/version.py"
             package_file.parent.mkdir(parents=True)
             package_file.write_text("# fixture\n", encoding="utf-8")
-            metadata = Mock(return_value="1.0.0")
+            metadata = Mock(return_value="1.0.1")
             with self.assertRaisesRegex(VersionResolutionError, "metadata is missing"):
                 resolve_version(package_file=package_file, metadata_version=metadata)
             metadata.assert_not_called()
@@ -205,9 +205,9 @@ class VersionResolutionTests(unittest.TestCase):
             self.assertEqual(
                 resolve_version(
                     package_file=package_file,
-                    metadata_version=lambda _name: "1.0.0",
+                    metadata_version=lambda _name: "1.0.1",
                 ),
-                "1.0.0",
+                "1.0.1",
             )
 
     def test_missing_installed_metadata_fails_clearly(self) -> None:
