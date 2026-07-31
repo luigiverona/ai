@@ -169,6 +169,24 @@ class UiVerificationBootstrapTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("ai 9.8.7", result.stdout)
 
+    def _select_fixture_shell(
+        self, env: dict[str, str], shell: str, *, existing: bool
+    ) -> tuple[Path, bytes | None]:
+        env["FAKE_LOGIN_SHELL"] = f"/usr/bin/{shell}"
+        env["FAKE_PROCESS_SHELL"] = shell
+        home = Path(env["HOME"])
+        path = home / ".config/fish/conf.d/ai.fish" if shell == "fish" else home / f".{shell}rc"
+        if not existing:
+            return path, None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = (
+            b"# ai-workstation managed fish PATH format 1\nset -gx EXISTING value\n"
+            if shell == "fish"
+            else f"original {shell}\n".encode()
+        )
+        path.write_bytes(content)
+        return path, content
+
     def test_bootstrap_fish_detection_atomic_install_and_idempotent_path(self) -> None:
         self._require_arch_nonroot()
         with tempfile.TemporaryDirectory() as raw:
@@ -928,6 +946,114 @@ class UiVerificationBootstrapTests(unittest.TestCase):
                     )
                     if not prior and point == "after_journal_preparation":
                         self.assertEqual(self._install(installer, env).returncode, 0)
+
+    def test_shell_backup_rollback_and_sigkill_recovery_matrix(self) -> None:
+        self._require_arch_nonroot()
+        transaction_pattern = re.compile(r"\A[0-9a-f]{32}\Z")
+        for shell in ("bash", "zsh", "fish"):
+            with self.subTest(shell=shell, mode="handled"), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                _, installer, env = self._bootstrap_fixture(root)
+                path, original = self._select_fixture_shell(env, shell, existing=True)
+                result = self._install(
+                    installer,
+                    env,
+                    AI_WORKSTATION_TEST_FAILURE_POINT="after_shell_integration",
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertFalse(
+                    any(".backup." in candidate.name for candidate in path.parent.iterdir())
+                )
+                self.assertFalse(
+                    (
+                        Path(env["HOME"]) / ".local/share/ai/.ai-workstation-transaction.json"
+                    ).exists()
+                )
+
+            for existing in (False, True):
+                with (
+                    self.subTest(shell=shell, mode="sigkill", existing=existing),
+                    tempfile.TemporaryDirectory() as raw,
+                ):
+                    root = Path(raw)
+                    _, installer, env = self._bootstrap_fixture(root)
+                    path, _ = self._select_fixture_shell(env, shell, existing=existing)
+                    self._kill_bootstrap_at(installer, env, "after_shell_integration")
+                    home = Path(env["HOME"])
+                    journal = home / ".local/share/ai/.ai-workstation-transaction.json"
+                    data = json.loads(journal.read_text(encoding="utf-8"))
+                    transaction_id = data["transaction_id"]
+                    self.assertRegex(transaction_id, transaction_pattern)
+                    backup_basename = path.name if path.name.startswith(".") else f".{path.name}"
+                    expected = path.parent / f"{backup_basename}.ai.backup.{transaction_id}"
+                    self.assertEqual(home / data["shell_backup"], expected)
+                    self.assertFalse(expected.name.startswith(".."))
+                    self.assertEqual(expected.exists(), existing)
+                    recovered = self._install(installer, env)
+                    self.assertEqual(recovered.returncode, 0, recovered.stderr)
+                    self.assertIn("Recovered interrupted installer transaction.", recovered.stdout)
+                    self.assertFalse(journal.exists())
+                    self.assertFalse(expected.exists())
+                    self.assertTrue(path.is_file())
+
+    def test_reconciliation_rejects_noncanonical_shell_backup_paths(self) -> None:
+        self._require_arch_nonroot()
+        corruptions = (
+            lambda data: f"..bashrc.ai.backup.{data['transaction_id']}",
+            lambda data: f"..zshrc.ai.backup.{data['transaction_id']}",
+            lambda data: f"arbitrary.ai.backup.{data['transaction_id']}",
+            lambda data: "../outside",
+        )
+        for corruption in corruptions:
+            with tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                _, installer, env = self._bootstrap_fixture(root)
+                self._select_fixture_shell(env, "bash", existing=True)
+                self._kill_bootstrap_at(installer, env, "after_shell_integration")
+                journal = Path(env["HOME"]) / ".local/share/ai/.ai-workstation-transaction.json"
+                data = json.loads(journal.read_text(encoding="utf-8"))
+                data["shell_backup"] = corruption(data)
+                journal.write_text(
+                    json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+                result = self._install(installer, env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unsafe shell_backup", result.stderr)
+                self.assertTrue(journal.exists())
+
+    def test_reconciliation_rejects_unsafe_shell_backup_files(self) -> None:
+        self._require_arch_nonroot()
+        for kind in ("symlink", "hardlink"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                _, installer, env = self._bootstrap_fixture(root)
+                self._select_fixture_shell(env, "bash", existing=True)
+                self._kill_bootstrap_at(installer, env, "after_shell_integration")
+                home = Path(env["HOME"])
+                journal = home / ".local/share/ai/.ai-workstation-transaction.json"
+                data = json.loads(journal.read_text(encoding="utf-8"))
+                backup = home / data["shell_backup"]
+                original = backup.read_bytes()
+                backup.unlink()
+                outside = root / "outside"
+                outside.write_bytes(original)
+                if kind == "symlink":
+                    backup.symlink_to(outside)
+                else:
+                    os.link(outside, backup)
+                result = self._install(installer, env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("transaction journal", result.stderr)
+                self.assertTrue(journal.exists())
+
+    def test_shell_backup_reconciliation_checks_owner_type_links_and_mode(self) -> None:
+        source = Path("bootstrap/install.in").read_text(encoding="utf-8")
+        self.assertIn("observed_uid != uid", source)
+        self.assertIn("info.st_nlink != 1", source)
+        self.assertIn("not stat.S_ISREG(info.st_mode)", source)
+        self.assertIn("stat.S_IMODE(info.st_mode) != 0o600", source)
 
     def test_bootstrap_refuses_malformed_journals_and_unrecorded_remnants(self) -> None:
         self._require_arch_nonroot()

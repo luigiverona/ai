@@ -708,7 +708,7 @@ class OutputTranscriptTests(unittest.TestCase):
         self.assertEqual(status, 0)
         rendered = output.getvalue()
         self.assertTrue(rendered.startswith("Plan\n"))
-        for forbidden in ("ai 2.0.0", "\nArch Linux\n", "Shell:", "Step 1", "[01/", "Password:"):
+        for forbidden in ("ai 2.0.1", "\nArch Linux\n", "Shell:", "Step 1", "[01/", "Password:"):
             self.assertNotIn(forbidden, rendered)
         version = subprocess.run(
             (sys.executable, "-m", "ai_setup", "--version"),
@@ -717,4 +717,4 @@ class OutputTranscriptTests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
-        self.assertEqual(version.stdout, "ai 2.0.0\n")
+        self.assertEqual(version.stdout, "ai 2.0.1\n")

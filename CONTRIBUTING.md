@@ -38,7 +38,7 @@ mypy tools
 bash -n bootstrap/install.in
 shellcheck bootstrap/install.in
 actionlint
-python tools/build_release.py --tag v2.0.0 --check-only
+python tools/build_release.py --tag v2.0.1 --check-only
 git diff --check
 ```
 

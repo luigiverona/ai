@@ -135,6 +135,8 @@ launcher_tmp=""
 launcher_backup=""
 shell_tmp=""
 shell_backup=""
+shell_basename=""
+shell_backup_basename=""
 current_backup=""
 marker_tmp=""
 transaction_started=false
@@ -469,9 +471,12 @@ shell_path = relative(
     r"(?:\.config/fish/conf\.d/ai\.fish|\.bashrc|\.zshrc)"
 )
 shell_backup = relative(
-    "shell_backup", home,
-    rf"(?:\.config/fish/conf\.d/\.ai\.fish|\.bashrc|\.zshrc)\.ai\.backup\.{transaction_id}"
+    "shell_backup", home, r"[A-Za-z0-9._/-]+"
 )
+shell_backup_name = shell_path.name if shell_path.name.startswith(".") else f".{shell_path.name}"
+expected_shell_backup = shell_path.parent / f"{shell_backup_name}.ai.backup.{transaction_id}"
+if shell_backup != expected_shell_backup:
+    fail("unsafe shell_backup")
 launcher_stage = home / f".local/bin/.ai.new.{transaction_id}"
 shell_stage = shell_path.parent / f".{shell_path.name}.ai.new.{transaction_id}"
 current_stage = root / f".current.{transaction_id}"
@@ -525,7 +530,11 @@ def digest_tree(path):
 
 def regular_digest(path):
     entry_info = path.lstat()
-    if not stat.S_ISREG(entry_info.st_mode) or entry_info.st_uid != uid:
+    if (
+        not stat.S_ISREG(entry_info.st_mode)
+        or entry_info.st_uid != uid
+        or entry_info.st_nlink != 1
+    ):
         fail(f"unsafe managed file {path}")
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -540,6 +549,10 @@ def managed_shell(path):
         lines = text.splitlines()
         return bool(lines) and lines[0] == fish_marker
     return block_begin in text.splitlines() and block_end in text.splitlines()
+
+def previous_shell(path):
+    expected = data["previous_shell_digest"]
+    return expected is not None and regular_digest(path) == expected
 
 def remove_tree(path, expected_digest):
     if not path.exists() or path.is_symlink() or not path.is_dir():
@@ -557,12 +570,16 @@ def remove_file(path, validator=None):
     path.unlink()
     fsync_dir(path.parent)
 
-def restore_file(path, backup, digest, validator):
+def restore_file(path, backup, digest, backup_validator, replacement_validator):
     if backup.exists() or backup.is_symlink():
-        if backup.is_symlink() or regular_digest(backup) != digest or not validator(backup):
+        if (
+            backup.is_symlink()
+            or regular_digest(backup) != digest
+            or not backup_validator(backup)
+        ):
             fail(f"invalid transaction backup {backup}")
         if path.exists() or path.is_symlink():
-            if path.is_symlink() or not validator(path):
+            if path.is_symlink() or not replacement_validator(path):
                 fail(f"unsafe replacement at {path}")
             path.unlink()
         os.replace(backup, path)
@@ -628,12 +645,22 @@ else:
 
     if data["launcher_had_previous"]:
         restore_file(
-            launcher, launcher_backup, data["previous_launcher_digest"], managed_launcher
+            launcher,
+            launcher_backup,
+            data["previous_launcher_digest"],
+            managed_launcher,
+            managed_launcher,
         )
     else:
         remove_file(launcher, managed_launcher)
     if data["shell_had_previous"]:
-        restore_file(shell_path, shell_backup, data["previous_shell_digest"], managed_shell)
+        restore_file(
+            shell_path,
+            shell_backup,
+            data["previous_shell_digest"],
+            previous_shell,
+            managed_shell,
+        )
     else:
         remove_file(shell_path, managed_shell)
 
@@ -645,7 +672,7 @@ for path, digest in (
         remove_tree(path, digest)
 for path, validator in (
     (launcher_backup, managed_launcher),
-    (shell_backup, managed_shell),
+    (shell_backup, previous_shell),
 ):
     if path.exists() or path.is_symlink():
         remove_file(path, validator)
@@ -953,7 +980,13 @@ PY
 staging="${releases_dir}/.${AI_WORKSTATION_VERSION}.new.${transaction_id}"
 release_backup="${releases_dir}/.${AI_WORKSTATION_VERSION}.backup.${transaction_id}"
 launcher_backup="${target_home}/.local/bin/.ai.backup.${transaction_id}"
-shell_backup="${path_file%/*}/.${path_file##*/}.ai.backup.${transaction_id}"
+shell_basename="${path_file##*/}"
+if [[ ${shell_basename} == .* ]]; then
+  shell_backup_basename="${shell_basename}"
+else
+  shell_backup_basename=".${shell_basename}"
+fi
+shell_backup="${path_file%/*}/${shell_backup_basename}.ai.backup.${transaction_id}"
 current_backup="${install_root}/.current.backup.${transaction_id}"
 if path_exists "${release_dir}"; then
   release_had_previous=true
