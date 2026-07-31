@@ -33,6 +33,7 @@ ignore = ["E501", "S108", "S603", "S607"]
 python_version = "3.11"
 strict = true
 packages = ["ai_setup"]
+mypy_path = "src"
 
 [tool.black]
 line-length = 100

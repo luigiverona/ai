@@ -5,16 +5,12 @@ import argparse
 import sys
 import urllib.request
 from pathlib import Path
-from typing import cast
 from urllib.parse import urljoin, urlparse
 
 if __package__ is None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ai_setup.config.codex_installer import (  # type: ignore[import-not-found]
-    TRUSTED_CODEX_INSTALLER,
-    verify_codex_installer,
-)
+from ai_setup.config.codex_installer import TRUSTED_CODEX_INSTALLER, verify_codex_installer
 
 
 class AuditedRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -53,7 +49,7 @@ def audit(served: bytes, upstream: bytes, *, effective_url: str, content_type: s
     )
     if served != upstream:
         raise ValueError("served installer differs from the audited upstream commit")
-    return cast(str, digest)
+    return digest
 
 
 def main() -> int:
