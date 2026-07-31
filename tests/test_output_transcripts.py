@@ -133,6 +133,17 @@ class OutputTranscriptTests(unittest.TestCase):
             runner=runner or FakeRunner(),  # type: ignore[arg-type]
         )
 
+    def assert_major_section_spacing(self, lines: list[str], headings: tuple[str, ...]) -> None:
+        self.assertTrue(lines)
+        self.assertNotEqual(lines[0], "")
+        self.assertNotEqual(lines[-1], "")
+        for heading in headings[1:]:
+            index = lines.index(heading)
+            empty = 0
+            while index - empty - 1 >= 0 and lines[index - empty - 1] == "":
+                empty += 1
+            self.assertEqual(empty, 1, f"spacing before {heading!r}: {lines!r}")
+
     def test_complete_plan_with_one_missing_application(self) -> None:
         transcript = Transcript()
         missing = next(p for p in self.catalog.apps if p.identifier == "mullvad-browser-bin")
@@ -155,6 +166,51 @@ class OutputTranscriptTests(unittest.TestCase):
             "Missing application: Mullvad Browser from the AUR.\n"
             "Fourteen of fifteen software requirements are already present.\n",
         )
+
+    def test_plan_to_first_stage_spacing_matches_interactive_and_yes(self) -> None:
+        plan = build_plan(Selection(frozenset({Capability.CODEX}), complete=False), self.catalog)
+        for assume_yes, answers in ((False, ("y",)), (True, ())):
+            with self.subTest(assume_yes=assume_yes):
+                transcript = Transcript(answers)
+                workflow = Workflow(
+                    plan,
+                    RunOptions(assume_yes=assume_yes, home=Path("/tmp/ai-transcript-home")),
+                    Terminal(input_fn=transcript.input, output=transcript.output),
+                    runner=FakeRunner(),  # type: ignore[arg-type]
+                )
+                workflow.progress = WorkflowProgress(workflow._selected_stages(()))
+                workflow._render_plan(())
+                self.assertTrue(workflow.terminal.confirm("Continue?", assume_yes=assume_yes))
+                workflow._begin(WorkflowStage.CODEX)
+                workflow.terminal.output("Controlled stage output.")
+                self.assert_major_section_spacing(transcript.lines, ("Plan", "Codex"))
+                self.assertNotIn("\n\n\nCodex\n", transcript.text + "\n")
+
+    def test_public_yes_collision_spacing_and_recovery_contract(self) -> None:
+        plan = build_plan(Selection(frozenset({Capability.CODEX}), complete=False), self.catalog)
+        transcript = Transcript()
+        workflow = Workflow(
+            plan,
+            RunOptions(assume_yes=True, home=Path("/tmp/ai-transcript-home")),
+            Terminal(input_fn=transcript.input, output=transcript.output),
+            runner=FakeRunner(),  # type: ignore[arg-type]
+        )
+        workflow.progress = WorkflowProgress(workflow._selected_stages(()))
+        workflow._render_plan(())
+        self.assertTrue(workflow.terminal.confirm("Continue?", assume_yes=True))
+        workflow._begin(WorkflowStage.CODEX)
+        workflow._render_error(
+            ValidationError(
+                "managed file",
+                "replace /tmp/disposable/.local/bin/codex-01",
+                "the path exists but is not recognized as managed by ai; "
+                "it was left unchanged; inspect the path and resolve the collision",
+            )
+        )
+        self.assert_major_section_spacing(transcript.lines, ("Plan", "Codex"))
+        self.assertIn("it was left unchanged", transcript.text)
+        self.assertIn("Resolve the reported problem, then run ai codex.", transcript.text)
+        self.assertNotIn("\n\n\nCodex\n", transcript.text + "\n")
 
     def test_complete_plan_with_multiple_or_no_missing_applications(self) -> None:
         missing = tuple(
@@ -664,7 +720,7 @@ class OutputTranscriptTests(unittest.TestCase):
         self.assertEqual(status, 0)
         rendered = output.getvalue()
         self.assertTrue(rendered.startswith("Plan\n"))
-        for forbidden in ("ai 1.0.2", "\nArch Linux\n", "Shell:", "Step 1", "[01/", "Password:"):
+        for forbidden in ("ai 1.0.3", "\nArch Linux\n", "Shell:", "Step 1", "[01/", "Password:"):
             self.assertNotIn(forbidden, rendered)
         version = subprocess.run(
             (sys.executable, "-m", "ai_setup", "--version"),
@@ -673,4 +729,4 @@ class OutputTranscriptTests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
-        self.assertEqual(version.stdout, "ai 1.0.2\n")
+        self.assertEqual(version.stdout, "ai 1.0.3\n")

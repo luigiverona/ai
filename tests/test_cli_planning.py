@@ -191,4 +191,4 @@ class CliPlanningTests(unittest.TestCase):
         with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as caught:
             parser(self.catalog).parse_args(("--version",))
         self.assertEqual(caught.exception.code, 0)
-        self.assertEqual(output.getvalue(), "ai 1.0.2\n")
+        self.assertEqual(output.getvalue(), "ai 1.0.3\n")

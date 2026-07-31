@@ -104,7 +104,7 @@ ruff format --check .
 mypy src
 mypy tools
 bash -n bootstrap/install.in
-python tools/build_release.py --tag v1.0.2 --check-only
+python tools/build_release.py --tag v1.0.3 --check-only
 git diff --check
 ```
 

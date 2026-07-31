@@ -207,7 +207,8 @@ class Workflow:
                 f"{self._number(present).capitalize()} of {self._number(total)} software "
                 f"{self._noun(total, 'requirement')} are already present."
             )
-        self.terminal.output("")
+        if not self.options.assume_yes:
+            self.terminal.output("")
 
     def _render_verbose_plan(self, pending: tuple[Package, ...]) -> None:
         if not self.options.verbose:
