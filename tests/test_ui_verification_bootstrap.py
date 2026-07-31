@@ -299,36 +299,158 @@ class UiVerificationBootstrapTests(unittest.TestCase):
         )
 
     def _instrument_installer(self, installer: Path, point: str, *, pause: bool) -> Path:
-        anchors = {
-            "after_journal_preparation": "transaction_started=true\n",
-            "after_verified_extraction": "write_journal verified\n",
-            "after_preserving_previous_release": "write_journal previous_state_preserved\n",
-            "after_installing_release": "write_journal new_release_installed\n",
-            "before_replacing_launcher": 'mv -T -- "${launcher_tmp}" "${launcher}"\n',
-            "after_replacing_launcher": "write_journal launcher_replaced\n",
-            "before_shell_integration": 'mv -T -- "${shell_tmp}" "${path_file}"\n',
-            "after_shell_integration": "write_journal shell_integration_replaced\n",
-            "before_switching_current": 'mv -T -- "${current_stage}/link" "${current}"\n',
-            "after_switching_current": "write_journal current_switched\n",
-            "after_recording_committed": "write_journal committed\n",
-            "during_cleanup_after_commit": "write_journal cleaning\n",
+        targets = {
+            "after_journal_preparation": (
+                "transaction_id=\"$(python - <<'PY'\n",
+                'mkdir -m 0700 -- "${staging}"\n',
+                "transaction_started=true\n",
+                False,
+            ),
+            "after_verified_extraction": (
+                'if ! python - "${archive}" "${staging}" "${target_uid}" <<\'PY\'\n',
+                "release_matches=false\n",
+                "write_journal verified\n",
+                False,
+            ),
+            "after_preserving_previous_release": (
+                "printf 'Installing the command... '\n",
+                "  write_journal installing_release\n",
+                "  write_journal previous_state_preserved\n",
+                False,
+            ),
+            "after_installing_release": (
+                "  write_journal installing_release\n",
+                'else\n  rm -rf -- "${staging}"\n',
+                "  write_journal new_release_installed\n",
+                False,
+            ),
+            "before_replacing_launcher": (
+                "printf 'Installing the command... '\n",
+                "# The commit point follows durable validation of every active managed surface.\n",
+                'mv -T -- "${launcher_tmp}" "${launcher}"\n',
+                True,
+            ),
+            "after_replacing_launcher": (
+                "printf 'Installing the command... '\n",
+                "# The commit point follows durable validation of every active managed surface.\n",
+                "write_journal launcher_replaced\n",
+                False,
+            ),
+            "before_shell_integration": (
+                "printf 'Installing the command... '\n",
+                "# The commit point follows durable validation of every active managed surface.\n",
+                '  mv -T -- "${shell_tmp}" "${path_file}"\n',
+                True,
+            ),
+            "after_shell_integration": (
+                "printf 'Installing the command... '\n",
+                "# The commit point follows durable validation of every active managed surface.\n",
+                '  mv -T -- "${shell_tmp}" "${path_file}"\n'
+                '  fsync_directory "${path_file%/*}"\n'
+                '  shell_tmp=""\n'
+                "  write_journal shell_integration_replaced\n",
+                False,
+            ),
+            "before_switching_current": (
+                "write_journal switching_current\n",
+                "# The commit point follows durable validation of every active managed surface.\n",
+                'mv -T -- "${current_stage}/link" "${current}"\n',
+                True,
+            ),
+            "after_switching_current": (
+                "write_journal switching_current\n",
+                "# The commit point follows durable validation of every active managed surface.\n",
+                "write_journal current_switched\n",
+                False,
+            ),
+            "after_recording_committed": (
+                "# The commit point follows durable validation of every active managed surface.\n",
+                'remove_installer_tree "${staging}"',
+                "write_journal committed\n",
+                False,
+            ),
+            "during_cleanup_after_commit": (
+                "# The commit point follows durable validation of every active managed surface.\n",
+                'remove_installer_tree "${staging}"',
+                "write_journal cleaning\n",
+                False,
+            ),
         }
-        anchor = anchors[point]
+        if point not in targets:
+            raise ValueError(f"unknown installer instrumentation point: {point}")
+        region_start, region_end, anchor, before = targets[point]
         source = installer.read_text(encoding="utf-8")
-        self.assertEqual(source.count(anchor), 1, point)
+        if source.count(region_start) != 1:
+            raise ValueError(f"{point}: structural region start is not unique")
+        start = source.index(region_start)
+        if source.count(region_end, start + len(region_start)) != 1:
+            raise ValueError(f"{point}: structural region end is not unique")
+        end = source.index(region_end, start + len(region_start))
+        if end <= start:
+            raise ValueError(f"{point}: structural region is invalid")
+        region = source[start:end]
+        if region.count(anchor) != 1:
+            raise ValueError(f"{point}: local anchor is not unique in its structural region")
         action = (
             f"printf 'test pause at {point}\\n'\nwhile true; do sleep 1; done\n"
             if pause
             else f'die "injected failure at {point}"\n'
         )
         instrumented = installer.with_name(f"install-{point}-{'pause' if pause else 'fail'}")
-        if point.startswith("before_"):
-            content = source.replace(anchor, action + anchor)
-        else:
-            content = source.replace(anchor, anchor + action)
+        replacement = action + anchor if before else anchor + action
+        content = source[:start] + region.replace(anchor, replacement) + source[end:]
         instrumented.write_text(content, encoding="utf-8")
         instrumented.chmod(0o700)
         return instrumented
+
+    def test_installer_instrumentation_is_structural_and_source_preserving(self) -> None:
+        points = (
+            "after_journal_preparation",
+            "after_verified_extraction",
+            "after_preserving_previous_release",
+            "after_installing_release",
+            "before_replacing_launcher",
+            "after_replacing_launcher",
+            "before_shell_integration",
+            "after_shell_integration",
+            "before_switching_current",
+            "after_switching_current",
+            "after_recording_committed",
+            "during_cleanup_after_commit",
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            _, installer, _ = self._bootstrap_fixture(root)
+            original = installer.read_bytes()
+            for point in points:
+                with self.subTest(point=point):
+                    instrumented = self._instrument_installer(installer, point, pause=False)
+                    self.assertNotEqual(instrumented.read_bytes(), original)
+                    self.assertEqual(installer.read_bytes(), original)
+
+            with self.assertRaisesRegex(ValueError, "unknown installer instrumentation point"):
+                self._instrument_installer(installer, "unknown", pause=False)
+
+            source = installer.read_text(encoding="utf-8")
+            installer.write_text(source.replace("transaction_started=true\n", ""), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "local anchor is not unique"):
+                self._instrument_installer(installer, "after_journal_preparation", pause=False)
+
+            installer.write_text(
+                source.replace(
+                    "transaction_started=true\n",
+                    "transaction_started=true\ntransaction_started=true\n",
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "local anchor is not unique"):
+                self._instrument_installer(installer, "after_journal_preparation", pause=False)
+
+            installer.write_text(
+                source.replace("transaction_id=\"$(python - <<'PY'\n", ""), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "structural region start is not unique"):
+                self._instrument_installer(installer, "after_journal_preparation", pause=False)
 
     def _managed_snapshot(self, home: Path) -> dict[str, object]:
         release = home / ".local/share/ai/releases/9.8.7"

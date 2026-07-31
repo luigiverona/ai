@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
-      - run: pacman -Syu --noconfirm python git shellcheck sudo curl flatpak
+      - run: pacman -Syu --noconfirm python git shellcheck sudo curl flatpak openssh
       # actions/checkout v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - run: useradd --create-home ai-ci
