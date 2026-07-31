@@ -157,5 +157,19 @@ jobs:
           test "$(jq -r .isImmutable <<<"$release")" = true
           test "$(jq '.assets | length' <<<"$release")" -eq 3
           test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
-          gh release verify "$RELEASE_TAG"
+          release_verified=false
+          for attempt in {1..12}; do
+            if [ "$attempt" -eq 12 ]; then
+              gh release verify "$RELEASE_TAG"
+              release_verified=true
+              break
+            fi
+            if gh release verify "$RELEASE_TAG" >/dev/null 2>&1; then
+              release_verified=true
+              break
+            fi
+            echo "Release attestation is not available yet; waiting 5 seconds (attempt $attempt/12)."
+            sleep 5
+          done
+          test "$release_verified" = true
           for asset in dist/*; do gh release verify-asset "$RELEASE_TAG" "$asset"; done
