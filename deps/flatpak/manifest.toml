@@ -1,0 +1,4 @@
+[[package]]
+name = "Flatpak"
+identifier = "flatpak"
+source = "pacman"

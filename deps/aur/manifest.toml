@@ -1,0 +1,9 @@
+[[package]]
+name = "Base development tools"
+identifier = "base-devel"
+source = "pacman"
+
+[[package]]
+name = "yay"
+identifier = "yay-bin"
+source = "aur"

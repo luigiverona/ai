@@ -1,0 +1,1275 @@
+#!/usr/bin/env bash
+set -euo pipefail
+IFS=$'\n\t'
+
+readonly AI_WORKSTATION_VERSION="@AI_WORKSTATION_VERSION@"
+readonly RELEASE_BASE="${AI_WORKSTATION_RELEASE_BASE:-https://github.com/luigiverona/ai/releases/download}"
+readonly EXPECTED_SHA256="@AI_WORKSTATION_ARCHIVE_SHA256@"
+readonly ROOT_MARKER_NAME=".ai-workstation-installation"
+readonly ROOT_MARKER_CONTENT="ai-workstation installation format 1"
+readonly LAUNCHER_MARKER="# ai-workstation managed launcher format 1"
+readonly FISH_MARKER="# ai-workstation managed fish PATH format 1"
+readonly PATH_BLOCK_BEGIN="# >>> ai-workstation managed PATH >>>"
+readonly PATH_BLOCK_END="# <<< ai-workstation managed PATH <<<"
+readonly JOURNAL_NAME=".ai-workstation-transaction.json"
+readonly JOURNAL_SCHEMA="1"
+
+die() { printf 'ai installer: %s\n' "$*" >&2; exit 1; }
+
+[[ ${EUID} -ne 0 ]] || die "do not pipe this installer to a root shell"
+[[ -r /etc/os-release ]] || die "cannot identify the operating system"
+# shellcheck source=/dev/null
+. /etc/os-release
+[[ ${ID:-} == arch ]] || die "Arch Linux is required"
+[[ $(uname -m) == x86_64 ]] || die "x86_64 architecture is required"
+for required in pacman curl sha256sum tar python id stat; do
+  command -v "${required}" >/dev/null || die "${required} is required"
+done
+python -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' ||
+  die "Python 3.11 or newer is required"
+
+target_user="$(id -un 2>/dev/null || true)"
+target_uid="$(id -u 2>/dev/null || true)"
+[[ -n ${target_user} && ${target_user} != root && ${target_uid} =~ ^[0-9]+$ ]] ||
+  die "cannot determine a safe target user"
+target_home="$(getent passwd "${target_user}" | cut -d: -f6)"
+login_shell="$(getent passwd "${target_user}" | cut -d: -f7)"
+[[ -n ${target_home} && ${target_home} != / ]] || die "cannot determine target home"
+[[ ${target_home} == "${HOME}" ]] ||
+  die "run the installer directly as ${target_user}, not through sudo"
+[[ -d ${target_home} && ! -L ${target_home} ]] || die "target home must be a real directory"
+[[ $(stat -c %u -- "${target_home}") == "${target_uid}" ]] ||
+  die "target home is not owned by ${target_user}"
+
+shell_name=""
+ancestor_pid="${PPID}"
+while [[ -n ${ancestor_pid} && ${ancestor_pid} != 0 ]]; do
+  ancestor_comm="$(ps -p "${ancestor_pid}" -o comm= 2>/dev/null | sed 's/^-//' || true)"
+  ancestor_args="$(ps -p "${ancestor_pid}" -o args= 2>/dev/null || true)"
+  ancestor_tty="$(ps -p "${ancestor_pid}" -o tty= 2>/dev/null | tr -d ' ' || true)"
+  case "${ancestor_comm}" in
+    fish|bash|zsh)
+      case " ${ancestor_args} " in
+        *" -c "*|*" -lc "*) ;;
+        *)
+          if [[ -n ${ancestor_tty} && ${ancestor_tty} != "?" ]]; then
+            shell_name="${ancestor_comm}"
+            break
+          fi
+          ;;
+      esac
+      ;;
+  esac
+  ancestor_pid="$(ps -p "${ancestor_pid}" -o ppid= 2>/dev/null | tr -d ' ' || true)"
+done
+if [[ -z ${shell_name} ]]; then
+  case "${login_shell##*/}" in
+    fish|bash|zsh) shell_name="${login_shell##*/}" ;;
+    *) die "the interactive or login shell must be fish, bash, or zsh" ;;
+  esac
+fi
+
+install_root="${target_home}/.local/share/ai"
+releases_dir="${install_root}/releases"
+release_dir="${releases_dir}/${AI_WORKSTATION_VERSION}"
+root_marker="${install_root}/${ROOT_MARKER_NAME}"
+current="${install_root}/current"
+launcher="${target_home}/.local/bin/ai"
+lock_dir="${TMPDIR:-/tmp}/ai-workstation-installer-${target_uid}.lock"
+journal="${install_root}/${JOURNAL_NAME}"
+
+stale_lock=""
+if ! mkdir -m 0700 -- "${lock_dir}" 2>/dev/null; then
+  [[ ! -L ${lock_dir} && -d ${lock_dir} &&
+    $(stat -c %u -- "${lock_dir}") == "${target_uid}" ]] ||
+    die "installer lock is not a safe user-owned directory: ${lock_dir}"
+  lock_pid_file="${lock_dir}/pid"
+  [[ ! -L ${lock_pid_file} && -f ${lock_pid_file} &&
+    $(stat -c %u -- "${lock_pid_file}") == "${target_uid}" ]] ||
+    die "installer lock has invalid ownership metadata: ${lock_dir}"
+  lock_pid="$(cat -- "${lock_pid_file}")"
+  [[ ${lock_pid} =~ ^[1-9][0-9]*$ ]] ||
+    die "installer lock has an invalid process identifier: ${lock_dir}"
+  if kill -0 "${lock_pid}" 2>/dev/null; then
+    die "another installer is running: ${lock_dir}"
+  fi
+  stale_lock="${lock_dir}.stale.$$"
+  [[ ! -e ${stale_lock} && ! -L ${stale_lock} ]] ||
+    die "stale installer lock recovery path exists: ${stale_lock}"
+  mv -- "${lock_dir}" "${stale_lock}" 2>/dev/null ||
+    die "another installer changed the lock during recovery"
+  mkdir -m 0700 -- "${lock_dir}" ||
+    die "could not acquire installer lock after stale-lock recovery"
+fi
+[[ ! -L ${lock_dir} && -d ${lock_dir} &&
+  $(stat -c %u -- "${lock_dir}") == "${target_uid}" ]] ||
+  die "installer lock is not a safe user-owned directory: ${lock_dir}"
+printf '%s\n' "$$" >"${lock_dir}/pid"
+chmod 0600 "${lock_dir}/pid"
+python - "${lock_dir}" <<'PY'
+import os
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+for path in (root / "pid", root):
+    flags = os.O_RDONLY
+    if path == root:
+        flags |= getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+PY
+if [[ -n ${stale_lock} ]]; then
+  rm -f -- "${stale_lock}/pid"
+  rmdir -- "${stale_lock}" ||
+    die "could not remove stale installer lock after recovery"
+fi
+
+tmp_dir=""
+staging=""
+current_stage=""
+launcher_tmp=""
+launcher_backup=""
+shell_tmp=""
+shell_backup=""
+current_backup=""
+marker_tmp=""
+transaction_started=false
+transaction_committed=false
+rollback_failed=false
+root_created=false
+local_created=false
+share_created=false
+bin_created=false
+config_created=false
+fish_created=false
+fish_conf_created=false
+transaction_id=""
+transaction_phase=""
+release_backup=""
+release_had_previous=false
+launcher_had_previous=false
+shell_had_previous=false
+current_had_previous=false
+previous_current=""
+previous_release_digest=""
+new_release_digest=""
+previous_launcher_digest=""
+previous_shell_digest=""
+
+fsync_directory() {
+  python - "$1" <<'PY'
+import os
+import sys
+
+flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+descriptor = os.open(sys.argv[1], flags)
+try:
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+PY
+}
+
+fsync_file() {
+  python - "$1" <<'PY'
+import os
+import sys
+
+descriptor = os.open(sys.argv[1], os.O_RDONLY)
+try:
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+PY
+}
+
+fsync_tree() {
+  python - "$1" <<'PY'
+import os
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+for path in sorted(root.rglob("*")):
+    if path.is_file() and not path.is_symlink():
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+for path in sorted((root, *root.rglob("*")), key=lambda item: len(item.parts), reverse=True):
+    if path.is_dir() and not path.is_symlink():
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+PY
+}
+
+tree_digest() {
+  python - "$1" "$target_uid" <<'PY'
+import hashlib
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+uid = int(sys.argv[2])
+digest = hashlib.sha256()
+for path in (root, *sorted(root.rglob("*"), key=lambda item: item.as_posix().encode())):
+    relative = path.relative_to(root).as_posix() or "."
+    info = path.lstat()
+    if info.st_uid != uid:
+        raise SystemExit("wrong owner")
+    if stat.S_ISDIR(info.st_mode):
+        kind, content = "directory", "-"
+    elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+        kind = "file"
+        content = hashlib.sha256(path.read_bytes()).hexdigest()
+    else:
+        raise SystemExit("unsafe release entry")
+    record = f"{relative}\0{kind}\0{stat.S_IMODE(info.st_mode):04o}\0{content}\n"
+    digest.update(record.encode())
+print(digest.hexdigest())
+PY
+}
+
+write_journal() {
+  transaction_phase="$1"
+  python - \
+    "${journal}" "${install_root}" "${target_uid}" "${transaction_id}" \
+    "${JOURNAL_SCHEMA}" "${transaction_phase}" "${release_had_previous}" "${launcher_had_previous}" \
+    "${shell_had_previous}" "${current_had_previous}" "${previous_current}" \
+    "${staging}" "${release_backup}" "${launcher_backup}" "${shell_backup}" \
+    "${path_file}" "${previous_release_digest}" "${new_release_digest}" \
+    "${previous_launcher_digest}" "${previous_shell_digest}" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+(
+    journal_raw, root_raw, uid_raw, transaction_id, schema, phase,
+    release_had_previous, launcher_had_previous, shell_had_previous,
+    current_had_previous, previous_current, staging, release_backup,
+    launcher_backup, shell_backup, shell_path, previous_release_digest,
+    new_release_digest, previous_launcher_digest, previous_shell_digest,
+) = sys.argv[1:]
+journal = pathlib.Path(journal_raw)
+root = pathlib.Path(root_raw)
+uid = int(uid_raw)
+data = {
+    "schema": int(schema),
+    "transaction_id": transaction_id,
+    "phase": phase,
+    "fresh": not any(
+        value == "true"
+        for value in (
+            release_had_previous,
+            launcher_had_previous,
+            shell_had_previous,
+            current_had_previous,
+        )
+    ),
+    "release_had_previous": release_had_previous == "true",
+    "launcher_had_previous": launcher_had_previous == "true",
+    "shell_had_previous": shell_had_previous == "true",
+    "current_had_previous": current_had_previous == "true",
+    "previous_current": previous_current or None,
+    "staging": pathlib.Path(staging).relative_to(root).as_posix(),
+    "release_backup": pathlib.Path(release_backup).relative_to(root).as_posix(),
+    "launcher_backup": pathlib.Path(launcher_backup).relative_to(root.parent.parent.parent).as_posix(),
+    "shell_backup": pathlib.Path(shell_backup).relative_to(root.parent.parent.parent).as_posix(),
+    "shell_path": pathlib.Path(shell_path).relative_to(root.parent.parent.parent).as_posix(),
+    "previous_release_digest": previous_release_digest or None,
+    "new_release_digest": new_release_digest or None,
+    "previous_launcher_digest": previous_launcher_digest or None,
+    "previous_shell_digest": previous_shell_digest or None,
+}
+temporary = journal.parent / f".{journal.name}.new.{transaction_id}"
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(data, handle, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, journal)
+    directory = os.open(journal.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+finally:
+    temporary.unlink(missing_ok=True)
+if journal.lstat().st_uid != uid:
+    raise SystemExit("journal owner changed")
+PY
+}
+
+recover_journal_replacement() {
+  python - "${install_root}" "${journal}" "${target_uid}" <<'PY'
+import os
+import pathlib
+import re
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+journal = pathlib.Path(sys.argv[2])
+uid = int(sys.argv[3])
+pattern = re.compile(r"\.ai-workstation-transaction\.json\.new\.[0-9a-f]{32}")
+candidates = (
+    [path for path in root.iterdir() if pattern.fullmatch(path.name)]
+    if root.is_dir() and not root.is_symlink()
+    else []
+)
+if journal.exists() or journal.is_symlink():
+    if candidates:
+        raise SystemExit("journal replacement remnant exists beside active journal")
+elif candidates:
+    if len(candidates) != 1:
+        raise SystemExit("multiple journal replacement remnants exist")
+    candidate = candidates[0]
+    info = candidate.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != uid or stat.S_IMODE(info.st_mode) != 0o600:
+        raise SystemExit("journal replacement remnant is unsafe")
+    os.replace(candidate, journal)
+    descriptor = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+PY
+}
+
+reconcile_transaction() {
+  [[ -e ${journal} || -L ${journal} ]] || return 0
+  python - \
+    "${journal}" "${install_root}" "${target_home}" "${target_uid}" \
+    "${JOURNAL_SCHEMA}" "${AI_WORKSTATION_VERSION}" "${LAUNCHER_MARKER}" "${FISH_MARKER}" \
+    "${PATH_BLOCK_BEGIN}" "${PATH_BLOCK_END}" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import stat
+import sys
+
+journal, root, home = map(pathlib.Path, sys.argv[1:4])
+uid = int(sys.argv[4])
+schema = int(sys.argv[5])
+version, launcher_marker, fish_marker, block_begin, block_end = sys.argv[6:]
+releases = root / "releases"
+release = releases / version
+launcher = home / ".local/bin/ai"
+expected_keys = {
+    "schema", "transaction_id", "phase", "fresh", "release_had_previous",
+    "launcher_had_previous", "shell_had_previous", "current_had_previous",
+    "previous_current", "staging", "release_backup", "launcher_backup",
+    "shell_backup", "shell_path", "previous_release_digest", "new_release_digest",
+    "previous_launcher_digest", "previous_shell_digest",
+}
+phases = {
+    "prepared", "verified", "preserving_previous", "previous_state_preserved",
+    "installing_release", "new_release_installed", "replacing_launcher",
+    "launcher_replaced", "replacing_shell", "shell_integration_replaced",
+    "switching_current", "current_switched", "committed", "cleaning",
+}
+
+def fail(reason):
+    raise SystemExit(f"transaction journal {journal}: {reason}")
+
+info = journal.lstat()
+observed_uid = info.st_uid
+if (
+    os.environ.get("AI_WORKSTATION_INSTALLER_TESTING") == "1"
+    and os.environ.get("AI_WORKSTATION_INSTALLER_TEST_SENTINEL") == "ai-bootstrap-test-only"
+    and os.environ.get("AI_WORKSTATION_TEST_WRONG_OWNER_JOURNAL") == str(journal)
+):
+    observed_uid = -1
+if not stat.S_ISREG(info.st_mode) or observed_uid != uid or stat.S_IMODE(info.st_mode) != 0o600:
+    fail("must be a user-owned regular file with mode 0600")
+
+class StrictObject(dict):
+    pass
+
+def object_pairs(pairs):
+    result = StrictObject()
+    for key, value in pairs:
+        if key in result:
+            fail(f"duplicate key {key}")
+        result[key] = value
+    return result
+
+try:
+    data = json.loads(journal.read_text(encoding="utf-8"), object_pairs_hook=object_pairs)
+except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    fail(f"malformed JSON: {exc}")
+if type(data) is not StrictObject or set(data) != expected_keys:
+    fail("keys do not match schema")
+if data["schema"] != schema:
+    fail("unsupported schema version")
+if not isinstance(data["transaction_id"], str) or not re.fullmatch(
+    r"[0-9a-f]{32}", data["transaction_id"]
+):
+    fail("invalid transaction identifier")
+if data["phase"] not in phases:
+    fail("invalid transaction phase")
+for key in (
+    "fresh", "release_had_previous", "launcher_had_previous",
+    "shell_had_previous", "current_had_previous",
+):
+    if type(data[key]) is not bool:
+        fail(f"{key} must be boolean")
+for key in (
+    "previous_current", "previous_release_digest", "new_release_digest",
+    "previous_launcher_digest", "previous_shell_digest",
+):
+    value = data[key]
+    if value is not None and (not isinstance(value, str) or not value):
+        fail(f"invalid {key}")
+for key in (
+    "previous_release_digest", "new_release_digest",
+    "previous_launcher_digest", "previous_shell_digest",
+):
+    if data[key] is not None and not re.fullmatch(r"[0-9a-f]{64}", data[key]):
+        fail(f"invalid {key}")
+
+def relative(key, base, pattern):
+    value = data[key]
+    if not isinstance(value, str):
+        fail(f"invalid {key}")
+    pure = pathlib.PurePosixPath(value)
+    if pure.is_absolute() or ".." in pure.parts or not re.fullmatch(pattern, value):
+        fail(f"unsafe {key}")
+    path = base / pure
+    resolved_base = base.resolve()
+    resolved_parent = path.parent.resolve(strict=False)
+    if resolved_parent != resolved_base and resolved_base not in resolved_parent.parents:
+        fail(f"unsafe {key}")
+    return path
+
+transaction_id = data["transaction_id"]
+escaped_version = re.escape(version)
+staging = relative(
+    "staging", root, rf"releases/\.{escaped_version}\.new\.{transaction_id}"
+)
+release_backup = relative(
+    "release_backup", root,
+    rf"releases/\.{escaped_version}\.backup\.{transaction_id}"
+)
+launcher_backup = relative(
+    "launcher_backup", home, rf"\.local/bin/\.ai\.backup\.{transaction_id}"
+)
+shell_path = relative(
+    "shell_path", home,
+    r"(?:\.config/fish/conf\.d/ai\.fish|\.bashrc|\.zshrc)"
+)
+shell_backup = relative(
+    "shell_backup", home,
+    rf"(?:\.config/fish/conf\.d/\.ai\.fish|\.bashrc|\.zshrc)\.ai\.backup\.{transaction_id}"
+)
+launcher_stage = home / f".local/bin/.ai.new.{transaction_id}"
+shell_stage = shell_path.parent / f".{shell_path.name}.ai.new.{transaction_id}"
+current_stage = root / f".current.{transaction_id}"
+if data["previous_current"] is not None and not re.fullmatch(
+    r"releases/[0-9]+\.[0-9]+\.[0-9]+", data["previous_current"]
+):
+    fail("unsafe previous_current")
+if data["fresh"] != (
+    not data["release_had_previous"]
+    and not data["launcher_had_previous"]
+    and not data["shell_had_previous"]
+    and not data["current_had_previous"]
+):
+    fail("fresh flag is inconsistent")
+if data["release_had_previous"] != (data["previous_release_digest"] is not None):
+    fail("previous release metadata is inconsistent")
+if data["launcher_had_previous"] != (data["previous_launcher_digest"] is not None):
+    fail("previous launcher metadata is inconsistent")
+if data["shell_had_previous"] != (data["previous_shell_digest"] is not None):
+    fail("previous shell metadata is inconsistent")
+if data["current_had_previous"] != (data["previous_current"] is not None):
+    fail("previous current metadata is inconsistent")
+if data["phase"] != "prepared" and data["new_release_digest"] is None:
+    fail("verified release digest is missing")
+
+def fsync_dir(path):
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+def digest_tree(path):
+    digest = hashlib.sha256()
+    for entry in (path, *sorted(path.rglob("*"), key=lambda item: item.as_posix().encode())):
+        entry_info = entry.lstat()
+        if entry_info.st_uid != uid:
+            fail(f"wrong owner in release tree {path}")
+        relative_path = entry.relative_to(path).as_posix() or "."
+        if stat.S_ISDIR(entry_info.st_mode):
+            kind, content = "directory", "-"
+        elif stat.S_ISREG(entry_info.st_mode) and entry_info.st_nlink == 1:
+            kind = "file"
+            content = hashlib.sha256(entry.read_bytes()).hexdigest()
+        else:
+            fail(f"unsafe entry in release tree {path}")
+        digest.update(
+            f"{relative_path}\0{kind}\0{stat.S_IMODE(entry_info.st_mode):04o}\0{content}\n".encode()
+        )
+    return digest.hexdigest()
+
+def regular_digest(path):
+    entry_info = path.lstat()
+    if not stat.S_ISREG(entry_info.st_mode) or entry_info.st_uid != uid:
+        fail(f"unsafe managed file {path}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def managed_launcher(path):
+    regular_digest(path)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return len(lines) > 1 and lines[1] == launcher_marker
+
+def managed_shell(path):
+    text = path.read_text(encoding="utf-8")
+    if shell_path.name == "ai.fish":
+        lines = text.splitlines()
+        return bool(lines) and lines[0] == fish_marker
+    return block_begin in text.splitlines() and block_end in text.splitlines()
+
+def remove_tree(path, expected_digest):
+    if not path.exists() or path.is_symlink() or not path.is_dir():
+        fail(f"missing or unsafe transaction tree {path}")
+    if expected_digest and digest_tree(path) != expected_digest:
+        fail(f"transaction tree content differs: {path}")
+    shutil.rmtree(path)
+    fsync_dir(path.parent)
+
+def remove_file(path, validator=None):
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink() or not path.is_file() or (validator and not validator(path)):
+        fail(f"unsafe transaction file {path}")
+    path.unlink()
+    fsync_dir(path.parent)
+
+def restore_file(path, backup, digest, validator):
+    if backup.exists() or backup.is_symlink():
+        if backup.is_symlink() or regular_digest(backup) != digest or not validator(backup):
+            fail(f"invalid transaction backup {backup}")
+        if path.exists() or path.is_symlink():
+            if path.is_symlink() or not validator(path):
+                fail(f"unsafe replacement at {path}")
+            path.unlink()
+        os.replace(backup, path)
+        fsync_dir(path.parent)
+    elif not path.exists() or path.is_symlink() or regular_digest(path) != digest:
+        fail(f"missing transaction backup for {path}")
+
+committed = data["phase"] in {"committed", "cleaning"}
+if committed:
+    if not release.is_dir() or release.is_symlink() or digest_tree(release) != data["new_release_digest"]:
+        fail("committed release is invalid")
+    current = root / "current"
+    if not current.is_symlink() or os.readlink(current) != f"releases/{version}":
+        fail("committed current link is invalid")
+    if not launcher.exists() or not managed_launcher(launcher):
+        fail("committed launcher is invalid")
+    if not shell_path.exists() or not managed_shell(shell_path):
+        fail("committed shell integration is invalid")
+else:
+    if data["release_had_previous"]:
+        if release_backup.exists() or release_backup.is_symlink():
+            if release_backup.is_symlink() or digest_tree(release_backup) != data["previous_release_digest"]:
+                fail("previous release backup is invalid")
+            if release.exists() or release.is_symlink():
+                if release.is_symlink() or digest_tree(release) != data["new_release_digest"]:
+                    fail("active release cannot be safely rolled back")
+                shutil.rmtree(release)
+                fsync_dir(releases)
+            os.replace(release_backup, release)
+            fsync_dir(releases)
+        elif not release.is_dir() or digest_tree(release) != data["previous_release_digest"]:
+            fail("previous release backup is missing")
+    elif release.exists() or release.is_symlink():
+        remove_tree(release, data["new_release_digest"])
+
+    current = root / "current"
+    current_backup = root / f".current.backup.{transaction_id}"
+    if data["current_had_previous"]:
+        if current_backup.is_symlink():
+            if os.readlink(current_backup) != data["previous_current"]:
+                fail("previous current backup is invalid")
+            if current.exists() or current.is_symlink():
+                if not current.is_symlink():
+                    fail("current link was replaced by unrelated content")
+                if os.readlink(current) == data["previous_current"]:
+                    current_backup.unlink()
+                    fsync_dir(root)
+                elif os.readlink(current) == f"releases/{version}":
+                    current.unlink()
+                    os.replace(current_backup, current)
+                else:
+                    fail("current link was replaced by unrelated content")
+            else:
+                os.replace(current_backup, current)
+            fsync_dir(root)
+        elif not current.is_symlink() or os.readlink(current) != data["previous_current"]:
+            fail("previous current backup is missing")
+    elif current.exists() or current.is_symlink():
+        if not current.is_symlink() or os.readlink(current) != f"releases/{version}":
+            fail("current link was replaced by unrelated content")
+        current.unlink()
+        fsync_dir(root)
+
+    if data["launcher_had_previous"]:
+        restore_file(
+            launcher, launcher_backup, data["previous_launcher_digest"], managed_launcher
+        )
+    else:
+        remove_file(launcher, managed_launcher)
+    if data["shell_had_previous"]:
+        restore_file(shell_path, shell_backup, data["previous_shell_digest"], managed_shell)
+    else:
+        remove_file(shell_path, managed_shell)
+
+for path, digest in (
+    (staging, data["new_release_digest"]),
+    (release_backup, data["previous_release_digest"]),
+):
+    if path.exists() or path.is_symlink():
+        remove_tree(path, digest)
+for path, validator in (
+    (launcher_backup, managed_launcher),
+    (shell_backup, managed_shell),
+):
+    if path.exists() or path.is_symlink():
+        remove_file(path, validator)
+if launcher_stage.exists() or launcher_stage.is_symlink():
+    remove_file(launcher_stage, managed_launcher)
+if shell_stage.exists() or shell_stage.is_symlink():
+    remove_file(shell_stage, managed_shell)
+if current_stage.exists() or current_stage.is_symlink():
+    if current_stage.is_symlink() or not current_stage.is_dir():
+        fail("unsafe current staging path")
+    entries = list(current_stage.iterdir())
+    if len(entries) != 1 or entries[0].name != "link" or not entries[0].is_symlink():
+        fail("unsafe current staging content")
+    if os.readlink(entries[0]) != f"releases/{version}":
+        fail("unsafe current staging link")
+    entries[0].unlink()
+    current_stage.rmdir()
+    fsync_dir(root)
+current_backup = root / f".current.backup.{transaction_id}"
+if current_backup.exists() or current_backup.is_symlink():
+    if not current_backup.is_symlink():
+        fail("unsafe current backup")
+    current_backup.unlink()
+    fsync_dir(root)
+journal.unlink()
+fsync_dir(root)
+print(
+    "retained committed installation"
+    if committed
+    else "restored interrupted installation"
+)
+PY
+}
+
+refuse_unrecorded_remnants() {
+  python - "${install_root}" "${target_home}" "${AI_WORKSTATION_VERSION}" <<'PY'
+import pathlib
+import re
+import sys
+
+root, home = map(pathlib.Path, sys.argv[1:3])
+version = re.escape(sys.argv[3])
+locations = (
+    (root / "releases", re.compile(rf"\.{version}\.(?:new|backup)\.[0-9a-f]{{32}}")),
+    (root, re.compile(r"\.current(?:\.backup)?\.[0-9a-f]{32}")),
+    (home / ".local/bin", re.compile(r"\.ai\.(?:new|backup)\.[0-9a-f]{32}")),
+    (
+        home / ".config/fish/conf.d",
+        re.compile(r"\.ai\.fish\.ai\.(?:new|backup)\.[0-9a-f]{32}"),
+    ),
+)
+found = []
+for directory, pattern in locations:
+    if directory.is_dir() and not directory.is_symlink():
+        found.extend(path for path in directory.iterdir() if pattern.fullmatch(path.name))
+if found:
+    rendered = ", ".join(str(path) for path in sorted(found))
+    raise SystemExit(f"unrecognized installer remnants require review: {rendered}")
+PY
+}
+
+remove_installer_tree() {
+  local path="$1"
+  local parent="$2"
+  local prefix="$3"
+  if [[ -n ${path} && ${path%/*} == "${parent}" && ${path##*/} == "${prefix}"* &&
+    ! -L ${path} && -d ${path} ]]; then
+    rm -rf -- "${path}"
+  fi
+}
+
+remove_installer_file() {
+  local path="$1"
+  local parent="$2"
+  local prefix="$3"
+  if [[ -n ${path} && ${path%/*} == "${parent}" && ${path##*/} == "${prefix}"* &&
+    ! -L ${path} && -f ${path} ]]; then
+    rm -f -- "${path}"
+  fi
+}
+
+rollback() {
+  [[ ${transaction_started} == true && ${transaction_committed} == false ]] || return 0
+  if reconcile_transaction >/dev/null; then
+    transaction_started=false
+    staging=""
+    launcher_backup=""
+    shell_backup=""
+    current_backup=""
+    release_backup=""
+    printf 'ai installer: installation failed; rollback restored the prior installation\n' >&2
+  else
+    rollback_failed=true
+    printf 'ai installer: rollback failed; diagnostic managed state was preserved at %s\n' \
+      "${journal}" >&2
+  fi
+}
+
+cleanup() {
+  rollback
+  remove_installer_tree "${tmp_dir}" "${TMPDIR:-/tmp}" "ai-bootstrap."
+  if [[ ${rollback_failed} == false ]]; then
+    remove_installer_tree "${staging}" "${releases_dir}" ".${AI_WORKSTATION_VERSION}.new."
+  fi
+  remove_installer_tree "${current_stage}" "${install_root}" ".current."
+  remove_installer_file "${launcher_tmp}" "${target_home}/.local/bin" ".ai.new."
+  remove_installer_file "${marker_tmp}" "${install_root}" ".${ROOT_MARKER_NAME}.new."
+  if [[ -n ${shell_tmp:-} ]]; then
+    remove_installer_file "${shell_tmp}" "${path_file%/*}" ".${path_file##*/}.ai.new."
+  fi
+  if [[ ${transaction_committed} == false && ${root_created} == true ]]; then
+    if [[ -f ${root_marker} && ! -L ${root_marker} &&
+      $(stat -c %u -- "${root_marker}" 2>/dev/null || true) == "${target_uid}" ]]; then
+      rm -f -- "${root_marker}"
+    fi
+    rmdir -- "${releases_dir}" "${install_root}" 2>/dev/null || true
+  fi
+  [[ ${fish_conf_created} == false ]] || rmdir -- "${target_home}/.config/fish/conf.d" 2>/dev/null || true
+  [[ ${fish_created} == false ]] || rmdir -- "${target_home}/.config/fish" 2>/dev/null || true
+  [[ ${config_created} == false ]] || rmdir -- "${target_home}/.config" 2>/dev/null || true
+  [[ ${bin_created} == false ]] || rmdir -- "${target_home}/.local/bin" 2>/dev/null || true
+  [[ ${share_created} == false ]] || rmdir -- "${target_home}/.local/share" 2>/dev/null || true
+  [[ ${local_created} == false ]] || rmdir -- "${target_home}/.local" 2>/dev/null || true
+  if [[ -d ${lock_dir} && ! -L ${lock_dir} &&
+    $(stat -c %u -- "${lock_dir}" 2>/dev/null || true) == "${target_uid}" ]]; then
+    if [[ -f ${lock_dir}/pid && ! -L ${lock_dir}/pid ]]; then
+      rm -f -- "${lock_dir}/pid"
+    fi
+    rmdir -- "${lock_dir}" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+failure_point() {
+  local point="$1"
+  if [[ ${AI_WORKSTATION_INSTALLER_TESTING:-} == 1 &&
+    ${AI_WORKSTATION_INSTALLER_TEST_SENTINEL:-} == "ai-bootstrap-test-only" &&
+    ${AI_WORKSTATION_TEST_PAUSE_POINT:-} == "${point}" ]]; then
+    printf 'ai installer test pause at %s\n' "${point}"
+    while true; do sleep 1; done
+  fi
+  if [[ ${AI_WORKSTATION_INSTALLER_TESTING:-} == 1 &&
+    ${AI_WORKSTATION_INSTALLER_TEST_SENTINEL:-} == "ai-bootstrap-test-only" &&
+    ${AI_WORKSTATION_TEST_FAILURE_POINT:-} == "${point}" ]]; then
+    die "injected failure at ${point}"
+  fi
+}
+
+path_exists() { [[ -e $1 || -L $1 ]]; }
+
+require_owned_regular() {
+  local path="$1"
+  local label="$2"
+  [[ ! -L ${path} && -f ${path} ]] || die "${label} is not a safe regular file: ${path}"
+  [[ $(stat -c %u -- "${path}") == "${target_uid}" ]] ||
+    die "${label} is not owned by ${target_user}: ${path}"
+}
+
+require_owned_directory() {
+  local path="$1"
+  local label="$2"
+  [[ ! -L ${path} && -d ${path} ]] || die "${label} is not a safe directory: ${path}"
+  [[ $(stat -c %u -- "${path}") == "${target_uid}" ]] ||
+    die "${label} is not owned by ${target_user}: ${path}"
+}
+
+ensure_directory() {
+  local path="$1"
+  local mode="$2"
+  local label="$3"
+  if path_exists "${path}"; then
+    require_owned_directory "${path}" "${label}"
+  else
+    mkdir -m "${mode}" -- "${path}"
+    fsync_directory "${path%/*}"
+  fi
+}
+
+launcher_content() {
+  cat <<EOF
+#!/bin/sh
+${LAUNCHER_MARKER}
+export AI_WORKSTATION_CATALOG_ROOT="${install_root}/current"
+export PYTHONPATH="${install_root}/current/src"
+export PYTHONDONTWRITEBYTECODE=1
+exec python -m ai_setup "\$@"
+EOF
+}
+
+# This line is written literally to the target user's shell file.
+# shellcheck disable=SC2016
+path_line='case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
+case "${shell_name}" in
+  fish)
+    path_file="${target_home}/.config/fish/conf.d/ai.fish"
+    # shellcheck disable=SC2016
+    path_line='fish_add_path --global --move $HOME/.local/bin'
+    ;;
+  bash) path_file="${target_home}/.bashrc" ;;
+  zsh) path_file="${target_home}/.zshrc" ;;
+esac
+
+# Refuse persistent collisions before creating the managed root.
+if path_exists "${launcher}"; then
+  require_owned_regular "${launcher}" "launcher"
+  [[ $(sed -n '2p' -- "${launcher}") == "${LAUNCHER_MARKER}" ]] ||
+    die "launcher exists but is not managed by ai: ${launcher}"
+fi
+if [[ ${shell_name} == fish ]] && path_exists "${path_file}"; then
+  require_owned_regular "${path_file}" "fish configuration"
+  [[ $(sed -n '1p' -- "${path_file}") == "${FISH_MARKER}" ]] ||
+    die "fish configuration exists but is not managed by ai: ${path_file}"
+elif [[ ${shell_name} != fish ]] && path_exists "${path_file}"; then
+  require_owned_regular "${path_file}" "${shell_name} configuration"
+fi
+
+root_existed=false
+if path_exists "${install_root}"; then
+  root_existed=true
+  require_owned_directory "${install_root}" "install root"
+  path_exists "${root_marker}" ||
+    die "install root exists but is not managed by ai: ${install_root}"
+  require_owned_regular "${root_marker}" "installation ownership marker"
+  if ! python - "${root_marker}" "${ROOT_MARKER_CONTENT}" <<'PY'
+import pathlib
+import sys
+
+raise SystemExit(
+    0 if pathlib.Path(sys.argv[1]).read_bytes() == (sys.argv[2] + "\n").encode() else 1
+)
+PY
+  then
+    die "install root has an invalid ai ownership marker: ${root_marker}"
+  fi
+fi
+
+if [[ ${root_existed} == true ]]; then
+  recover_journal_replacement ||
+    die "could not recover durable transaction metadata"
+  if path_exists "${journal}"; then
+    reconcile_transaction ||
+      die "could not reconcile interrupted installer transaction"
+    printf 'Recovered interrupted installer transaction.\n'
+  else
+    refuse_unrecorded_remnants ||
+      die "unrecognized installer remnants prevent installation"
+  fi
+  path_exists "${releases_dir}" &&
+    require_owned_directory "${releases_dir}" "managed releases directory"
+  if path_exists "${release_dir}"; then
+    require_owned_directory "${release_dir}" "same-version release"
+  fi
+  if path_exists "${current}"; then
+    [[ -L ${current} ]] || die "current path is not a safe managed link: ${current}"
+    [[ $(stat -c %u -- "${current}") == "${target_uid}" ]] ||
+      die "current link is not owned by ${target_user}: ${current}"
+    if ! python - "${current}" "${releases_dir}" <<'PY'
+import pathlib
+import sys
+
+current = pathlib.Path(sys.argv[1])
+releases = pathlib.Path(sys.argv[2]).resolve()
+target = current.resolve(strict=False)
+raise SystemExit(0 if releases in target.parents and target.is_dir() and not target.is_symlink() else 1)
+PY
+    then
+      die "current link does not resolve within the managed releases directory"
+    fi
+  fi
+fi
+
+tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/ai-bootstrap.XXXXXXXX")"
+archive="${tmp_dir}/ai-${AI_WORKSTATION_VERSION}.tar.gz"
+release_url="${RELEASE_BASE}/v${AI_WORKSTATION_VERSION}/ai-${AI_WORKSTATION_VERSION}.tar.gz"
+
+printf 'Installing ai.\n'
+printf 'Downloading the release... '
+if ! curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+  -o "${archive}" "${release_url}"; then
+  printf 'failed.\n'
+  die "release download failed"
+fi
+printf 'done.\n'
+printf 'Verifying the release... '
+if ! printf '%s  %s\n' "${EXPECTED_SHA256}" "${archive}" |
+  sha256sum --check --status -; then
+  printf 'failed.\n'
+  die "release checksum mismatch"
+fi
+printf 'done.\n'
+
+path_exists "${target_home}/.local" || local_created=true
+ensure_directory "${target_home}/.local" 0700 ".local directory"
+path_exists "${target_home}/.local/share" || share_created=true
+ensure_directory "${target_home}/.local/share" 0700 ".local/share directory"
+if [[ ${root_existed} == false ]]; then
+  mkdir -m 0700 -- "${install_root}"
+  fsync_directory "${install_root%/*}"
+  root_created=true
+  marker_tmp="$(mktemp "${install_root}/.${ROOT_MARKER_NAME}.new.XXXXXXXX")"
+  printf '%s\n' "${ROOT_MARKER_CONTENT}" >"${marker_tmp}"
+  chmod 0600 "${marker_tmp}"
+  fsync_file "${marker_tmp}"
+  mv -- "${marker_tmp}" "${root_marker}"
+  fsync_directory "${install_root}"
+  marker_tmp=""
+fi
+ensure_directory "${releases_dir}" 0700 "managed releases directory"
+fsync_directory "${install_root}"
+path_exists "${target_home}/.local/bin" || bin_created=true
+ensure_directory "${target_home}/.local/bin" 0700 ".local/bin directory"
+
+transaction_id="$(python - <<'PY'
+import secrets
+print(secrets.token_hex(16))
+PY
+)"
+staging="${releases_dir}/.${AI_WORKSTATION_VERSION}.new.${transaction_id}"
+release_backup="${releases_dir}/.${AI_WORKSTATION_VERSION}.backup.${transaction_id}"
+launcher_backup="${target_home}/.local/bin/.ai.backup.${transaction_id}"
+shell_backup="${path_file%/*}/.${path_file##*/}.ai.backup.${transaction_id}"
+current_backup="${install_root}/.current.backup.${transaction_id}"
+if path_exists "${release_dir}"; then
+  release_had_previous=true
+  previous_release_digest="$(tree_digest "${release_dir}")" ||
+    die "same-version release contains unsafe ownership, links, or special files"
+fi
+if path_exists "${launcher}"; then
+  launcher_had_previous=true
+  previous_launcher_digest="$(sha256sum "${launcher}" | cut -d' ' -f1)"
+fi
+if path_exists "${path_file}"; then
+  shell_had_previous=true
+  previous_shell_digest="$(sha256sum "${path_file}" | cut -d' ' -f1)"
+fi
+if path_exists "${current}"; then
+  current_had_previous=true
+  previous_current="$(readlink -- "${current}")"
+fi
+write_journal prepared
+transaction_started=true
+failure_point after_journal_preparation
+mkdir -m 0700 -- "${staging}"
+fsync_directory "${releases_dir}"
+if ! python - "${archive}" "${staging}" "${target_uid}" <<'PY'
+import copy
+import pathlib
+import sys
+import tarfile
+
+archive = pathlib.Path(sys.argv[1])
+destination = pathlib.Path(sys.argv[2]).resolve()
+target_uid = int(sys.argv[3])
+with tarfile.open(archive, "r:gz") as bundle:
+    safe = []
+    archive_root = None
+    for original in bundle.getmembers():
+        parts = pathlib.PurePosixPath(original.name).parts
+        if not parts or original.name.startswith("/") or ".." in parts:
+            raise SystemExit("unsafe archive path")
+        if archive_root is None:
+            archive_root = parts[0]
+        if parts[0] != archive_root:
+            raise SystemExit("archive must have one top-level directory")
+        if len(parts) == 1:
+            if original.isdir():
+                continue
+            raise SystemExit("archive root must be a directory")
+        if not (original.isdir() or original.isfile()):
+            raise SystemExit("archive links and special files are not allowed")
+        member = copy.copy(original)
+        member.name = str(pathlib.PurePosixPath(*parts[1:]))
+        target = (destination / member.name).resolve()
+        if destination != target and destination not in target.parents:
+            raise SystemExit("archive member escapes destination")
+        safe.append(member)
+    bundle.extractall(destination, members=safe)
+for path in (destination, *destination.rglob("*")):
+    if path.is_symlink() or path.stat().st_uid != target_uid:
+        raise SystemExit("extracted release ownership is invalid")
+PY
+then
+  die "release archive is unsafe or invalid"
+fi
+[[ -f ${staging}/pyproject.toml && -f ${staging}/src/ai_setup/cli.py &&
+  -d ${staging}/apps && -d ${staging}/deps ]] ||
+  die "release archive has an invalid layout"
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="${staging}/src" \
+  python -m ai_setup --version >/dev/null ||
+  die "release application failed validation"
+fsync_tree "${staging}" || die "could not durably flush the verified release"
+new_release_digest="$(tree_digest "${staging}")" ||
+  die "verified release tree has unsafe content"
+write_journal verified
+failure_point after_verified_extraction
+
+release_matches=false
+if [[ -d ${release_dir} && ! -L ${release_dir} ]]; then
+  if python - "${release_dir}" "${staging}" "${target_uid}" <<'PY'
+import hashlib
+import os
+import pathlib
+import stat
+import sys
+
+existing = pathlib.Path(sys.argv[1])
+verified = pathlib.Path(sys.argv[2])
+target_uid = int(sys.argv[3])
+
+def inventory(root):
+    result = {}
+    for path in (root, *sorted(root.rglob("*"))):
+        relative = path.relative_to(root).as_posix() or "."
+        info = path.lstat()
+        if info.st_uid != target_uid:
+            raise ValueError("wrong owner")
+        if stat.S_ISDIR(info.st_mode):
+            kind, digest = "directory", None
+        elif stat.S_ISREG(info.st_mode):
+            if info.st_nlink != 1:
+                raise ValueError("hard-linked file")
+            kind = "file"
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        else:
+            raise ValueError("link or special file")
+        result[relative] = (kind, stat.S_IMODE(info.st_mode), digest)
+    return result
+
+try:
+    same = inventory(existing) == inventory(verified)
+except (OSError, ValueError):
+    raise SystemExit(2)
+raise SystemExit(0 if same else 1)
+PY
+  then
+    release_matches=true
+  else
+    comparison_status=$?
+    [[ ${comparison_status} -eq 1 ]] ||
+      die "same-version release contains unsafe ownership, links, or special files"
+  fi
+fi
+
+launcher_tmp="${target_home}/.local/bin/.ai.new.${transaction_id}"
+[[ ! -e ${launcher_tmp} && ! -L ${launcher_tmp} ]] ||
+  die "managed launcher staging path already exists: ${launcher_tmp}"
+: >"${launcher_tmp}"
+launcher_content >"${launcher_tmp}"
+chmod 0755 "${launcher_tmp}"
+fsync_file "${launcher_tmp}"
+
+if [[ ${shell_name} == fish ]]; then
+  path_exists "${target_home}/.config" || config_created=true
+  ensure_directory "${target_home}/.config" 0700 ".config directory"
+  path_exists "${target_home}/.config/fish" || fish_created=true
+  ensure_directory "${target_home}/.config/fish" 0700 "fish configuration directory"
+  path_exists "${target_home}/.config/fish/conf.d" || fish_conf_created=true
+  ensure_directory "${target_home}/.config/fish/conf.d" 0700 "fish conf.d directory"
+else
+  ensure_directory "${path_file%/*}" 0700 "shell configuration directory"
+fi
+shell_needs_change=true
+if [[ ${shell_name} == fish ]]; then
+  shell_tmp="${path_file%/*}/.${path_file##*/}.ai.new.${transaction_id}"
+  [[ ! -e ${shell_tmp} && ! -L ${shell_tmp} ]] ||
+    die "managed shell staging path already exists: ${shell_tmp}"
+  : >"${shell_tmp}"
+  printf '%s\n%s\n' "${FISH_MARKER}" "${path_line}" >"${shell_tmp}"
+  chmod 0644 "${shell_tmp}"
+  if [[ -f ${path_file} && ! -L ${path_file} ]] && cmp -s -- "${path_file}" "${shell_tmp}"; then
+    shell_needs_change=false
+  fi
+else
+  if [[ -f ${path_file} ]] && grep -Fqx "${PATH_BLOCK_BEGIN}" "${path_file}" &&
+    grep -Fqx "${PATH_BLOCK_END}" "${path_file}" &&
+    grep -Fqx "${path_line}" "${path_file}"; then
+    shell_needs_change=false
+  else
+    shell_tmp="${path_file%/*}/.${path_file##*/}.ai.new.${transaction_id}"
+    [[ ! -e ${shell_tmp} && ! -L ${shell_tmp} ]] ||
+      die "managed shell staging path already exists: ${shell_tmp}"
+    : >"${shell_tmp}"
+    if [[ -f ${path_file} ]]; then cat -- "${path_file}" >"${shell_tmp}"; fi
+    printf '\n%s\n# Added by ai\n%s\n%s\n' \
+      "${PATH_BLOCK_BEGIN}" "${path_line}" "${PATH_BLOCK_END}" >>"${shell_tmp}"
+    chmod 0644 "${shell_tmp}"
+  fi
+fi
+if [[ -n ${shell_tmp} ]]; then fsync_file "${shell_tmp}"; fi
+
+current_stage="${install_root}/.current.${transaction_id}"
+mkdir -m 0700 -- "${current_stage}"
+ln -s "releases/${AI_WORKSTATION_VERSION}" "${current_stage}/link"
+fsync_directory "${current_stage}"
+fsync_directory "${install_root}"
+
+printf 'Installing the command... '
+if [[ ${release_matches} == false ]]; then
+  write_journal preserving_previous
+  if [[ ${release_had_previous} == true ]]; then
+    [[ ! -e ${release_backup} && ! -L ${release_backup} ]] ||
+      die "managed release backup path already exists: ${release_backup}"
+    mv -- "${release_dir}" "${release_backup}"
+    fsync_directory "${releases_dir}"
+  fi
+  write_journal previous_state_preserved
+  failure_point after_preserving_previous_release
+  write_journal installing_release
+  mv -- "${staging}" "${release_dir}"
+  fsync_directory "${releases_dir}"
+  write_journal new_release_installed
+  failure_point after_installing_release
+else
+  rm -rf -- "${staging}"
+  fsync_directory "${releases_dir}"
+  write_journal new_release_installed
+fi
+
+write_journal replacing_launcher
+if [[ ${launcher_had_previous} == true ]]; then
+  [[ ! -e ${launcher_backup} && ! -L ${launcher_backup} ]] ||
+    die "managed launcher backup path already exists: ${launcher_backup}"
+  cp -p --no-dereference -- "${launcher}" "${launcher_backup}"
+  fsync_file "${launcher_backup}"
+  fsync_directory "${launcher_backup%/*}"
+fi
+failure_point before_replacing_launcher
+mv -T -- "${launcher_tmp}" "${launcher}"
+fsync_directory "${launcher%/*}"
+launcher_tmp=""
+write_journal launcher_replaced
+failure_point after_replacing_launcher
+
+if [[ ${shell_needs_change} == true ]]; then
+  write_journal replacing_shell
+  if [[ ${shell_had_previous} == true ]]; then
+    [[ ! -e ${shell_backup} && ! -L ${shell_backup} ]] ||
+      die "managed shell backup path already exists: ${shell_backup}"
+    cp -p --no-dereference -- "${path_file}" "${shell_backup}"
+    fsync_file "${shell_backup}"
+    fsync_directory "${shell_backup%/*}"
+  fi
+  failure_point before_shell_integration
+  mv -T -- "${shell_tmp}" "${path_file}"
+  fsync_directory "${path_file%/*}"
+  shell_tmp=""
+  write_journal shell_integration_replaced
+  failure_point after_shell_integration
+else
+  write_journal shell_integration_replaced
+fi
+
+write_journal switching_current
+failure_point before_switching_current
+if [[ ${current_had_previous} == true ]]; then
+  [[ ! -e ${current_backup} && ! -L ${current_backup} ]] ||
+      die "managed current backup path already exists: ${current_backup}"
+  ln -s -- "$(readlink -- "${current}")" "${current_backup}"
+  fsync_directory "${install_root}"
+fi
+mv -T -- "${current_stage}/link" "${current}"
+rmdir -- "${current_stage}"
+fsync_directory "${install_root}"
+current_stage=""
+write_journal current_switched
+failure_point after_switching_current
+
+# The commit point follows durable validation of every active managed surface.
+[[ -d ${release_dir} && ! -L ${release_dir} &&
+  $(tree_digest "${release_dir}") == "${new_release_digest}" ]] ||
+  die "installed release failed durable validation"
+[[ -L ${current} && $(readlink -- "${current}") == "releases/${AI_WORKSTATION_VERSION}" ]] ||
+  die "current link failed durable validation"
+[[ -f ${launcher} && ! -L ${launcher} && $(sed -n '2p' -- "${launcher}") == "${LAUNCHER_MARKER}" ]] ||
+  die "launcher failed durable validation"
+[[ -f ${path_file} && ! -L ${path_file} ]] ||
+  die "shell integration failed durable validation"
+fsync_tree "${release_dir}"
+fsync_file "${launcher}"
+fsync_file "${path_file}"
+fsync_directory "${release_dir%/*}"
+fsync_directory "${launcher%/*}"
+fsync_directory "${path_file%/*}"
+fsync_directory "${install_root}"
+write_journal committed
+transaction_committed=true
+failure_point after_recording_committed
+write_journal cleaning
+remove_installer_tree "${staging}" "${releases_dir}" ".${AI_WORKSTATION_VERSION}.new."
+staging=""
+if path_exists "${release_backup}"; then
+  rm -rf -- "${release_backup}"
+  fsync_directory "${releases_dir}"
+fi
+failure_point during_cleanup_after_commit
+if path_exists "${launcher_backup}"; then
+  rm -f -- "${launcher_backup}"
+  fsync_directory "${launcher_backup%/*}"
+fi
+if path_exists "${shell_backup}"; then
+  rm -f -- "${shell_backup}"
+  fsync_directory "${shell_backup%/*}"
+fi
+if path_exists "${current_backup}"; then
+  rm -f -- "${current_backup}"
+  fsync_directory "${install_root}"
+fi
+rm -f -- "${journal}"
+fsync_directory "${install_root}"
+printf 'done.\n'
+
+if [[ ${shell_needs_change} == true ]]; then
+  printf 'Configuring the %s PATH... done.\n' "${shell_name}"
+else
+  printf 'The %s PATH is already configured.\n' "${shell_name}"
+fi
+printf '\nThe ai command is installed.\n'
+printf 'Run ai to set up the workstation.\n'

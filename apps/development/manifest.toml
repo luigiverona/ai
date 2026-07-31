@@ -1,0 +1,4 @@
+[[package]]
+name = "OpenAI Codex CLI"
+identifier = "codex"
+source = "upstream"

@@ -1,0 +1,14 @@
+[[package]]
+name = "Git"
+identifier = "git"
+source = "pacman"
+
+[[package]]
+name = "curl"
+identifier = "curl"
+source = "pacman"
+
+[[package]]
+name = "OpenSSH"
+identifier = "openssh"
+source = "pacman"

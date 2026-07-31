@@ -1,0 +1,71 @@
+name: ai Pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing published immutable release to deploy
+        required: true
+
+concurrency:
+  group: ai-pages
+  cancel-in-progress: false
+
+jobs:
+  build-site:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag }}
+      - name: Verify release and download its exact assets
+        run: |
+          test "$(git cat-file -t "$RELEASE_TAG")" = tag
+          release=$(gh release view "$RELEASE_TAG" --json isDraft,isImmutable,targetCommitish,assets)
+          test "$(jq -r .isDraft <<<"$release")" = false
+          test "$(jq -r .isImmutable <<<"$release")" = true
+          test "$(jq '.assets | length' <<<"$release")" -eq 4
+          gh release verify "$RELEASE_TAG"
+          mkdir release-assets
+          gh release download "$RELEASE_TAG" --dir release-assets
+          for asset in release-assets/*; do gh release verify-asset "$RELEASE_TAG" "$asset"; done
+      - name: Build exact Pages distribution
+        run: |
+          python tools/build_site.py \
+            --release-dir release-assets \
+            --site-dir site \
+            --skip-runtime-validation
+          test -f site/install
+          test ! -L site/install
+          test "$(find site -mindepth 1 | wc -l)" -eq 1
+          cmp release-assets/install site/install
+          test ! -e site/index.html
+          test ! -e site/releases
+      # actions/upload-pages-artifact v5.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
+        with:
+          path: site
+
+  deploy:
+    needs: build-site
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # actions/configure-pages v6.0.0
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d
+      # actions/deploy-pages v5.0.0
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128

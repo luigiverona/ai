@@ -1,0 +1,79 @@
+name: ai CI
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      # actions/setup-python v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install --disable-pip-version-check -e . ruff mypy
+      - run: python -m compileall src tests tools
+      - run: python -m unittest discover
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy src
+      - run: mypy tools
+      - run: python tools/build_release.py --tag v1.0.0 --check-only
+      - run: git diff --check
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: bash -n bootstrap/install.in
+      - run: shellcheck bootstrap/install.in
+
+  arch:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm python git shellcheck sudo curl flatpak
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: useradd --create-home ai-ci
+      - run: su ai-ci -c "cp -R '$GITHUB_WORKSPACE' /tmp/ai-ci-source"
+      - run: su ai-ci -c "cd /tmp/ai-ci-source && python -m compileall src tests tools"
+      - run: su ai-ci -c "cd /tmp/ai-ci-source && PYTHONPATH=src python -m unittest discover"
+      - run: bash -n bootstrap/install.in
+      - run: su ai-ci -c "python -m venv /tmp/ai-ci-venv"
+      - run: su ai-ci -c "/tmp/ai-ci-venv/bin/python -m pip install --disable-pip-version-check --no-deps /tmp/ai-ci-source"
+      - run: su ai-ci -c "/tmp/ai-ci-venv/bin/ai --help"
+      - run: su ai-ci -c "/tmp/ai-ci-venv/bin/ai --version"
+      - run: su ai-ci -c "/tmp/ai-ci-venv/bin/ai --dry-run"
+      - run: su ai-ci -c "/tmp/ai-ci-venv/bin/ai apps browser --dry-run"
+      - run: su ai-ci -c "/tmp/ai-ci-venv/bin/ai github --dry-run"
+      - run: su ai-ci -c "/tmp/ai-ci-venv/bin/ai codex --dry-run"
+      - name: Verify incomplete status is read-only
+        run: |
+          find /home/ai-ci -xdev -printf '%P\t%m\t%s\t%T@\n' | sort > /tmp/status-before
+          set +e
+          su ai-ci -c "/tmp/ai-ci-venv/bin/ai status" > /tmp/status-output 2>&1
+          status=$?
+          set -e
+          test "$status" -eq 1
+          grep -Fx 'Status' /tmp/status-output
+          grep -Fx 'Workstation is not ready.' /tmp/status-output
+          if grep -E 'Traceback|\[sudo\]|Continue\?|Setup complete\.' /tmp/status-output; then
+            exit 1
+          fi
+          if grep -Fx 'Plan' /tmp/status-output; then
+            exit 1
+          fi
+          find /home/ai-ci -xdev -printf '%P\t%m\t%s\t%T@\n' | sort > /tmp/status-after
+          cmp /tmp/status-before /tmp/status-after

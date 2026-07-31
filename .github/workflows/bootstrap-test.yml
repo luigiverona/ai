@@ -1,0 +1,29 @@
+name: ai bootstrap installation
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable release to test
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-bootstrap-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  arch:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install bootstrap prerequisites
+        run: pacman -Syu --noconfirm curl fish flatpak python shellcheck sudo zsh
+      - name: Test deployed bootstrap as unprivileged users
+        env:
+          AI_WORKSTATION_TEST_TAG: ${{ inputs.tag }}
+        run: bash tools/test_bootstrap_arch.sh

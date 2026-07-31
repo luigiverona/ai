@@ -1,0 +1,165 @@
+name: ai release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing annotated release tag to validate or publish
+        required: true
+
+concurrency:
+  group: ai-release-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  validate-build:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    permissions:
+      contents: read
+    steps:
+      - name: Install validation dependencies
+        run: pacman -Syu --noconfirm python git shellcheck sudo curl flatpak
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'push' && github.ref || inputs.tag }}
+      - name: Verify annotated tag and main ancestry
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: |
+          test "$(git -c safe.directory="$GITHUB_WORKSPACE" cat-file -t "$RELEASE_TAG")" = tag
+          test "$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse "$RELEASE_TAG^{commit}")" = "$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)"
+          git -c safe.directory="$GITHUB_WORKSPACE" fetch --no-tags origin main:refs/remotes/origin/main
+          git -c safe.directory="$GITHUB_WORKSPACE" merge-base --is-ancestor "$RELEASE_TAG^{commit}" origin/main
+      - name: Validate release contract and notes
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: python tools/build_release.py --tag "$RELEASE_TAG" --check-only
+      - name: Create clean independent checkouts
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: |
+          git -c safe.directory="$GITHUB_WORKSPACE" clone --no-hardlinks "$GITHUB_WORKSPACE" /tmp/ai-build-one
+          git -c safe.directory="$GITHUB_WORKSPACE" clone --no-hardlinks "$GITHUB_WORKSPACE" /tmp/ai-build-two
+          git -C /tmp/ai-build-one checkout --detach "$RELEASE_TAG"
+          git -C /tmp/ai-build-two checkout --detach "$RELEASE_TAG"
+          useradd --create-home ai-ci
+          chown -R ai-ci:ai-ci /tmp/ai-build-one /tmp/ai-build-two
+      - name: Run complete validation as an unprivileged user
+        run: |
+          su ai-ci -c "python -m venv /tmp/ai-release-venv"
+          su ai-ci -c "/tmp/ai-release-venv/bin/python -m pip install --disable-pip-version-check -e /tmp/ai-build-one ruff mypy"
+          su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/python -m compileall src tests tools"
+          su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/python -m unittest discover"
+          su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/ruff check ."
+          su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/ruff format --check ."
+          su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/mypy src"
+          su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/mypy tools"
+          bash -n /tmp/ai-build-one/bootstrap/install.in
+          shellcheck /tmp/ai-build-one/bootstrap/install.in
+          su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/ai --help"
+          su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/ai --version"
+          su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/ai --dry-run"
+          su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/ai apps browser --dry-run"
+          su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/ai github --dry-run"
+          su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/ai codex --dry-run"
+          su ai-ci -c "git -C /tmp/ai-build-one diff --check"
+      - name: Build and validate twice
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: |
+          su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/python tools/build_release.py --tag '$RELEASE_TAG'"
+          su ai-ci -c "cd /tmp/ai-build-two && python tools/build_release.py --tag '$RELEASE_TAG'"
+          cmp /tmp/ai-build-one/dist/ai-*.tar.gz /tmp/ai-build-two/dist/ai-*.tar.gz
+          cmp /tmp/ai-build-one/dist/ai-*.tar.gz.sha256 /tmp/ai-build-two/dist/ai-*.tar.gz.sha256
+          cmp /tmp/ai-build-one/dist/SHA256SUMS /tmp/ai-build-two/dist/SHA256SUMS
+          cmp /tmp/ai-build-one/dist/install /tmp/ai-build-two/dist/install
+          su ai-ci -c "cd /tmp/ai-build-one && /tmp/ai-release-venv/bin/python tools/validate_release.py dist/ai-*.tar.gz"
+          su ai-ci -c "cd /tmp/ai-build-two && python tools/validate_release.py dist/ai-*.tar.gz"
+          bash -n /tmp/ai-build-one/dist/install
+          shellcheck /tmp/ai-build-one/dist/install
+      # actions/upload-artifact v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ai-release-assets-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          path: /tmp/ai-build-one/dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: validate-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'push' && github.ref || inputs.tag }}
+      # actions/download-artifact v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ai-release-assets-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          path: dist
+      - name: Attest release assets
+        # actions/attest-build-provenance v4.1.1
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-path: dist/*
+      - name: Create or verify complete draft
+        run: |
+          if existing=$(gh release view "$RELEASE_TAG" --json isDraft,isImmutable 2>/dev/null); then
+            if [ "$(jq -r .isDraft <<<"$existing")" = false ]; then
+              test "$(jq -r .isImmutable <<<"$existing")" = true
+              echo reuse=true >> "$GITHUB_ENV"
+              exit 0
+            fi
+            gh release delete "$RELEASE_TAG" --yes
+          fi
+          gh release create "$RELEASE_TAG" \
+            --verify-tag \
+            --draft \
+            --title "ai ${RELEASE_TAG#v}" \
+            --notes-file "docs/releases/$RELEASE_TAG.md" \
+            dist/install \
+            dist/ai-*.tar.gz \
+            dist/ai-*.tar.gz.sha256 \
+            dist/SHA256SUMS
+          echo reuse=false >> "$GITHUB_ENV"
+      - name: Download and compare uploaded assets
+        run: |
+          mkdir downloaded
+          gh release download "$RELEASE_TAG" --dir downloaded
+          test "$(find downloaded -maxdepth 1 -type f | wc -l)" -eq 4
+          for asset in dist/*; do cmp "$asset" "downloaded/$(basename "$asset")"; done
+          (cd downloaded && sha256sum --check SHA256SUMS)
+          (cd downloaded && sha256sum --check ai-*.tar.gz.sha256)
+          python tools/validate_release.py downloaded/ai-*.tar.gz \
+            --checksum downloaded/ai-*.tar.gz.sha256 \
+            --sums downloaded/SHA256SUMS \
+            --installer downloaded/install \
+            --skip-runtime
+      - name: Publish verified draft
+        if: env.reuse != 'true'
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest
+      - name: Verify published immutable release
+        run: |
+          release=$(gh release view "$RELEASE_TAG" --json tagName,targetCommitish,isDraft,isImmutable,assets,url)
+          test "$(jq -r .tagName <<<"$release")" = "$RELEASE_TAG"
+          test "$(jq -r .isDraft <<<"$release")" = false
+          test "$(jq -r .isImmutable <<<"$release")" = true
+          test "$(jq '.assets | length' <<<"$release")" -eq 4
+          test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
+          gh release verify "$RELEASE_TAG"
+          for asset in dist/*; do gh release verify-asset "$RELEASE_TAG" "$asset"; done

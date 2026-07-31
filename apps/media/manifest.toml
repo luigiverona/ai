@@ -1,0 +1,4 @@
+[[package]]
+name = "Spotify"
+identifier = "spotify-launcher"
+source = "pacman"

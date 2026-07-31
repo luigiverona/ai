@@ -1,0 +1,4 @@
+[[package]]
+name = "Sober"
+identifier = "org.vinegarhq.Sober"
+source = "flatpak"

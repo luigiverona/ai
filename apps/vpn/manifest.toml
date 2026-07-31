@@ -1,0 +1,4 @@
+[[package]]
+name = "Mullvad VPN"
+identifier = "mullvad-vpn"
+source = "pacman"
