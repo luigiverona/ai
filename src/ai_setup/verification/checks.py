@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import platform
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,6 +8,7 @@ from ai_setup.execution.runner import CommandRunner
 from ai_setup.models import Package, Source
 from ai_setup.packages.managers import flathub_readiness
 from ai_setup.planning.state import StateInspector
+from ai_setup.system import ARCH_REQUIRED, is_arch_linux_x86_64
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,8 +32,8 @@ class Verifier:
 
     def system(self, os_release_path: Path = Path("/etc/os-release")) -> CheckResult:
         os_release = os_release_path.read_text(encoding="utf-8")
-        good = "ID=arch" in os_release and platform.machine() == "x86_64"
-        return CheckResult("supported system", good, "Arch Linux x86_64 required")
+        good = is_arch_linux_x86_64(os_release)
+        return CheckResult("supported system", good, ARCH_REQUIRED)
 
     def package(self, package: Package) -> CheckResult:
         if package.source is Source.AUR and package.identifier == "yay-bin":

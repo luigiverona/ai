@@ -1,10 +1,16 @@
 # ai
 
-`ai` sets up and verifies an Arch Linux workstation through one guided CLI.
+`ai` is a personal setup tool for fresh Arch Linux x86-64 workstations. Other
+distributions and customized installation environments are unsupported.
+
+It installs the maintainer's explicit application catalog and configures Git, GitHub,
+dedicated SSH access, two isolated Codex profiles, and shell integration through one
+interactive CLI. It is maintained for one normal user on one fresh workstation at a
+time, not as a general workstation framework.
 
 ## Requirements
 
-- Arch Linux on x86-64
+- A fresh Arch Linux x86-64 installation
 - A normal, non-root user with sudo access
 - Network access
 - fish, Bash, or Zsh
@@ -56,6 +62,17 @@ Application categories and their current contents come from the manifests under
 [`apps/`](apps/). Run `ai apps --help` to see the available categories; for example,
 `ai apps games --dry-run` previews the per-user Flatpak installation of Steam from Flathub.
 
+## Application categories
+
+- `browser`: LibreWolf and Mullvad Browser
+- `development`: OpenAI Codex CLI
+- `editor`: Visual Studio Code
+- `game`: Sober
+- `games`: Steam from `com.valvesoftware.Steam`
+- `media`: Spotify
+- `social`: Discord
+- `vpn`: Mullvad VPN
+
 ## What it configures
 
 - a supported full Arch Linux system update;
@@ -105,7 +122,9 @@ ruff format --check .
 mypy src
 mypy tools
 bash -n bootstrap/install.in
-python tools/build_release.py --tag v2.1.0 --check-only
+shellcheck bootstrap/install.in
+actionlint
+python tools/build_release.py --tag v2.2.0 --check-only
 git diff --check
 ```
 

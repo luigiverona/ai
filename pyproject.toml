@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-workstation"
-version = "2.1.0"
-description = "Production-minded Arch Linux workstation setup"
+version = "2.2.0"
+description = "Personal setup tool for fresh Arch Linux x86-64 workstations"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

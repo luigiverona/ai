@@ -122,7 +122,7 @@ class RuntimeIdentityTests(unittest.TestCase):
 
 class VersionResolutionTests(unittest.TestCase):
     def write_project(
-        self, root: Path, *, name: str = "ai-workstation", version: str = "2.1.0"
+        self, root: Path, *, name: str = "ai-workstation", version: str = "2.2.0"
     ) -> Path:
         package_file = root / "src/ai_setup/version.py"
         package_file.parent.mkdir(parents=True, exist_ok=True)
@@ -135,11 +135,11 @@ class VersionResolutionTests(unittest.TestCase):
 
     def test_pyproject_is_the_source_checkout_version(self) -> None:
         data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-        self.assertEqual(data["project"]["version"], "2.1.0")
-        self.assertEqual(project_version(Path.cwd()), "2.1.0")
-        self.assertEqual(resolve_version(), "2.1.0")
+        self.assertEqual(data["project"]["version"], "2.2.0")
+        self.assertEqual(project_version(Path.cwd()), "2.2.0")
+        self.assertEqual(resolve_version(), "2.2.0")
         self.assertNotIn(
-            '__version__ = "2.1.0"',
+            '__version__ = "2.2.0"',
             Path("src/ai_setup/__init__.py").read_text(encoding="utf-8"),
         )
 
@@ -149,7 +149,7 @@ class VersionResolutionTests(unittest.TestCase):
             metadata = Mock(return_value="9.9.9")
             self.assertEqual(
                 resolve_version(package_file=package_file, metadata_version=metadata),
-                "2.1.0",
+                "2.2.0",
             )
             metadata.assert_not_called()
 

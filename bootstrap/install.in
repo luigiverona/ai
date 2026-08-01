@@ -20,8 +20,8 @@ die() { printf 'ai installer: %s\n' "$*" >&2; exit 1; }
 [[ -r /etc/os-release ]] || die "cannot identify the operating system"
 # shellcheck source=/dev/null
 . /etc/os-release
-[[ ${ID:-} == arch ]] || die "Arch Linux is required"
-[[ $(uname -m) == x86_64 ]] || die "x86_64 architecture is required"
+[[ $(uname -s) == Linux && ${ID:-} == arch && $(uname -m) == x86_64 ]] ||
+  die "Arch Linux x86-64 is required."
 for required in pacman curl sha256sum tar python id stat; do
   command -v "${required}" >/dev/null || die "${required} is required"
 done

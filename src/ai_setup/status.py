@@ -53,7 +53,7 @@ class StatusWorkflow:
         failures = [result for result in results if not result.passed]
         if failures:
             for result in failures:
-                self.terminal.output(f"{result.name}: {result.reason}.")
+                self.terminal.output(f"{result.name}: {result.reason.rstrip('.')}.")
             self.terminal.output("")
             self.terminal.output("Workstation is not ready.")
             return 1

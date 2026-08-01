@@ -1,5 +1,8 @@
 # Security
 
+`ai` is a personal setup tool for fresh Arch Linux x86-64 workstations. Other
+distributions and customized installation environments are unsupported.
+
 ## Supported versions
 
 Only the latest published release receives security fixes.

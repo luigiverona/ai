@@ -1,8 +1,11 @@
-# Contributing
+# Maintainer development guide
 
 ## Scope
 
-Changes should preserve the project's:
+`ai` is a personal setup tool for fresh Arch Linux x86-64 workstations. Other
+distributions and customized installation environments are unsupported.
+
+Changes preserve the maintainer's:
 
 - Arch Linux and x86-64 focus;
 - CLI-first, CLI-only supported interface;
@@ -38,7 +41,7 @@ mypy tools
 bash -n bootstrap/install.in
 shellcheck bootstrap/install.in
 actionlint
-python tools/build_release.py --tag v2.1.0 --check-only
+python tools/build_release.py --tag v2.2.0 --check-only
 git diff --check
 ```
 
@@ -64,7 +67,7 @@ major-section spacing, prompts, focused recovery commands, partial failures, exp
 interruptions, TTY and redirected output, and verbose redaction. Keep assertions focused
 on intentional interaction contracts rather than incidental wrapping.
 
-## Commit and pull request expectations
+## Commit expectations
 
 Use the repository's short imperative commit style, such as:
 
@@ -74,7 +77,7 @@ fix: preserve provider-aware package readiness
 refactor: centralize runtime definitions
 ```
 
-A pull request should state:
+A change review should record:
 
 - the behavior changed and why;
 - security or trust-boundary impact;

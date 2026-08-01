@@ -2,7 +2,10 @@
 
 ## Scope
 
-`ai` plans, applies, and verifies one opinionated Arch Linux workstation setup. It
+`ai` is a personal setup tool for fresh Arch Linux x86-64 workstations. Other
+distributions and customized installation environments are unsupported.
+
+It plans, applies, and verifies the maintainer's workstation setup. It
 handles declared software, system updates, Git and GitHub access, a dedicated GitHub SSH
 key, two isolated Codex profiles, Flatpak/Flathub, and shell PATH configuration.
 

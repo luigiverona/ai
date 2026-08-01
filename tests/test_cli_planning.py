@@ -163,7 +163,9 @@ class CliPlanningTests(unittest.TestCase):
         help_text = parser(self.catalog).format_help()
         for text in (
             "usage: ai [command] [options]",
-            "Set up an Arch Linux workstation.",
+            "Personal setup for a fresh Arch Linux x86-64 workstation.",
+            "Other distributions and",
+            "customized installation environments are unsupported.",
             "setup",
             "apps [CATEGORY ...]",
             "git",
@@ -225,4 +227,4 @@ class CliPlanningTests(unittest.TestCase):
         with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as caught:
             parser(self.catalog).parse_args(("--version",))
         self.assertEqual(caught.exception.code, 0)
-        self.assertEqual(output.getvalue(), "ai 2.1.0\n")
+        self.assertEqual(output.getvalue(), "ai 2.2.0\n")

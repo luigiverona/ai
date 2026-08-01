@@ -71,7 +71,7 @@ class UiVerificationBootstrapTests(unittest.TestCase):
             ],
         )
 
-    @patch("ai_setup.verification.checks.platform.machine", return_value="wrong")
+    @patch("ai_setup.system.platform.machine", return_value="wrong")
     def test_verification_failure(self, _: object) -> None:
         result = Verifier(FakeRunner(), Path.home()).system()  # type: ignore[arg-type]
         self.assertFalse(result.passed)

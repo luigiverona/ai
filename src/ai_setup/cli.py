@@ -71,7 +71,10 @@ def parser(catalog: Catalog | None = None) -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         prog=IDENTITY.command_name,
         usage="%(prog)s [command] [options]",
-        description="Set up an Arch Linux workstation.",
+        description=(
+            "Personal setup for a fresh Arch Linux x86-64 workstation. "
+            "Other distributions and customized installation environments are unsupported."
+        ),
         formatter_class=HelpFormatter,
         add_help=False,
     )

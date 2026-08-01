@@ -1,5 +1,8 @@
 # Troubleshooting
 
+`ai` is a personal setup tool for fresh Arch Linux x86-64 workstations. Other
+distributions and customized installation environments are unsupported.
+
 ## Setup stopped partway through
 
 Earlier completed stages remain in place. Read the final summary for the failed stage
