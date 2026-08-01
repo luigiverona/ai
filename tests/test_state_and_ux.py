@@ -70,12 +70,43 @@ class StateAndUxTests(unittest.TestCase):
     def test_no_packages_installed(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             pending = self.inspector(Path(raw), set()).pending(self.packages)
-            self.assertEqual(len(pending), 15)
+            self.assertEqual(len(pending), 16)
 
     def test_all_packages_installed(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             ids = {package.identifier for package in self.packages}
             self.assertEqual(self.inspector(Path(raw), ids).pending(self.packages), ())
+
+    def test_installed_steam_focused_rerun_produces_no_install_command(self) -> None:
+        steam = next(
+            package for package in self.packages if package.identifier == "com.valvesoftware.Steam"
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            repository = home / ".local/share/flatpak/repo"
+            repository.mkdir(parents=True)
+            (repository / "config").write_text("[core]\nrepo_version=1\n", encoding="utf-8")
+            remotes = ("flatpak", "remotes", "--user", "--columns=name")
+            info = ("flatpak", "info", "--user", "com.valvesoftware.Steam")
+            runner = FakeRunner(
+                {
+                    remotes: CommandResult(remotes, 0, "flathub\n", ""),
+                    info: CommandResult(info, 0, "", ""),
+                }
+            )
+            workflow = Workflow(
+                Plan((Capability.APPS,), (Capability.FLATPAK, Capability.FLATHUB), (steam,)),
+                RunOptions(home=home),
+                Terminal(output=lambda _: None),
+                runner=runner,  # type: ignore[arg-type]
+            )
+            inspector = StateInspector(runner, home)  # type: ignore[arg-type]
+            workflow._flatpak(inspector)
+            workflow._flatpak(inspector)
+            self.assertFalse(
+                any(command.argv[:2] == ("flatpak", "install") for command in runner.commands)
+            )
+            self.assertEqual([command.argv for command in runner.commands].count(info), 2)
 
     def test_source_yay_provider_satisfies_preferred_yay_bin_requirement(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -189,7 +220,7 @@ class StateAndUxTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             pending = self.inspector(Path(raw), {"git"}).pending(self.packages)
             self.assertNotIn("git", {package.identifier for package in pending})
-            self.assertEqual(len(pending), 14)
+            self.assertEqual(len(pending), 15)
 
     def test_rerun_skips_requirements_completed_before_failure(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -369,7 +400,7 @@ class StateAndUxTests(unittest.TestCase):
         )
         workflow.progress.selected = workflow._selected_stages(self.packages[:2])
         workflow._render_plan(self.packages[:2])
-        self.assertIn("Thirteen of fifteen software requirements are already present.", output)
+        self.assertIn("Fourteen of 16 software requirements are already present.", output)
 
     def test_vpn_dry_run_groups_official_package_as_system_software(self) -> None:
         vpn = next(package for package in self.packages if package.identifier == "mullvad-vpn")

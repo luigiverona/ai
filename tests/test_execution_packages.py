@@ -596,3 +596,21 @@ class ExecutionTests(unittest.TestCase):
             with patch("ai_setup.packages.managers.shutil.which", return_value="/usr/bin/flatpak"):
                 FlatpakManager(runner, home).ensure_flathub()  # type: ignore[arg-type]
             self.assertFalse(any(c.argv[1] == "remote-add" for c in runner.commands))
+
+    def test_flatpak_installs_steam_per_user_from_flathub_once(self) -> None:
+        runner = FakeRunner()
+        FlatpakManager(runner).install(("com.valvesoftware.Steam", "com.valvesoftware.Steam"))  # type: ignore[arg-type]
+        self.assertEqual(
+            [command.argv for command in runner.commands],
+            [
+                (
+                    "flatpak",
+                    "install",
+                    "--user",
+                    "--noninteractive",
+                    "--or-update",
+                    "flathub",
+                    "com.valvesoftware.Steam",
+                )
+            ],
+        )

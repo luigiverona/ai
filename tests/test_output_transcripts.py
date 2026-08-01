@@ -163,7 +163,7 @@ class OutputTranscriptTests(unittest.TestCase):
             "Configure or verify the shell PATH.\n"
             "Verify the selected workstation state.\n\n"
             "Missing application: Mullvad Browser from the AUR.\n"
-            "Fourteen of fifteen software requirements are already present.\n",
+            "Fifteen of 16 software requirements are already present.\n",
         )
 
     def test_plan_to_first_stage_spacing_matches_interactive_and_yes(self) -> None:
@@ -226,9 +226,7 @@ class OutputTranscriptTests(unittest.TestCase):
             "Mullvad Browser from the AUR.\nSober from Flatpak.",
             transcript.text,
         )
-        self.assertIn(
-            "Twelve of fifteen software requirements are already present.", transcript.text
-        )
+        self.assertIn("Thirteen of 16 software requirements are already present.", transcript.text)
         ready = Transcript()
         ready_workflow = self.workflow(self.complete_plan, ready)
         ready_workflow.progress = WorkflowProgress(ready_workflow._selected_stages(()))
@@ -294,7 +292,7 @@ class OutputTranscriptTests(unittest.TestCase):
             "Configure or verify GitHub SSH access.\nConfigure or verify both Codex profiles.\n"
             "Configure or verify the shell PATH.\nVerify the selected workstation state.\n\n"
             "Missing application: Mullvad Browser from the AUR.\n"
-            "Fourteen of fifteen software requirements are already present.\n\n"
+            "Fifteen of 16 software requirements are already present.\n\n"
             "Continue? [y/N] y\n\n"
             "Administrator access\nSudo will ask for your password.\n[sudo] password for og:\n\n"
             "System update\nUpdating Arch Linux...\nSystem updated.\n\n"
@@ -708,7 +706,7 @@ class OutputTranscriptTests(unittest.TestCase):
         self.assertEqual(status, 0)
         rendered = output.getvalue()
         self.assertTrue(rendered.startswith("Plan\n"))
-        for forbidden in ("ai 2.0.1", "\nArch Linux\n", "Shell:", "Step 1", "[01/", "Password:"):
+        for forbidden in ("ai 2.1.0", "\nArch Linux\n", "Shell:", "Step 1", "[01/", "Password:"):
             self.assertNotIn(forbidden, rendered)
         version = subprocess.run(
             (sys.executable, "-m", "ai_setup", "--version"),
@@ -717,4 +715,4 @@ class OutputTranscriptTests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
-        self.assertEqual(version.stdout, "ai 2.0.1\n")
+        self.assertEqual(version.stdout, "ai 2.1.0\n")

@@ -6,12 +6,37 @@ from pathlib import Path
 
 from ai_setup.catalog.loader import load_catalog
 from ai_setup.errors import ValidationError
+from ai_setup.models import Source
 from tests.helpers import write_manifest
 
 GOOD = '[[package]]\nname="Git"\nidentifier="git"\nsource="pacman"\n'
 
 
 class CatalogTests(unittest.TestCase):
+    def test_steam_is_the_single_games_flatpak_application(self) -> None:
+        catalog = load_catalog()
+        steam = [
+            package for package in catalog.apps if package.identifier == "com.valvesoftware.Steam"
+        ]
+        self.assertEqual(len(steam), 1)
+        self.assertEqual(
+            (steam[0].name, steam[0].source, steam[0].category),
+            ("Steam", Source.FLATPAK, "games"),
+        )
+        self.assertIn("games", catalog.app_categories)
+
+    def test_steam_addition_is_deterministic_and_has_no_native_variant(self) -> None:
+        first = load_catalog()
+        second = load_catalog()
+        self.assertEqual(first, second)
+        native_identifiers = {
+            package.identifier
+            for package in (*first.apps, *first.deps)
+            if package.source in {Source.PACMAN, Source.AUR}
+        }
+        self.assertNotIn("steam", native_identifiers)
+        self.assertNotIn("steam-native-runtime", native_identifiers)
+
     def test_yay_bin_is_preferred_artifact_for_logical_yay_dependency(self) -> None:
         dependency = next(package for package in load_catalog().deps if package.name == "yay")
         self.assertEqual(

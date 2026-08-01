@@ -31,6 +31,7 @@ APPLICATIONS: dict[str, tuple[PackageIdentity, ...]] = {
     "development": ((Source.UPSTREAM, "codex"),),
     "editor": ((Source.AUR, "visual-studio-code-bin"),),
     "game": ((Source.FLATPAK, "org.vinegarhq.Sober"),),
+    "games": ((Source.FLATPAK, "com.valvesoftware.Steam"),),
     "media": ((Source.PACMAN, "spotify-launcher"),),
     "social": ((Source.PACMAN, "discord"),),
     "vpn": ((Source.PACMAN, "mullvad-vpn"),),
@@ -214,9 +215,11 @@ class PublicPlanningContractTests(unittest.TestCase):
                 _invocation, plan = self.plan("apps", category)
                 self.assertTrue(AUR_REQUIREMENTS <= set(identities(plan.packages)))
                 self.assertFalse(FLATPAK_REQUIREMENTS & set(identities(plan.packages)))
-        _invocation, game = self.plan("apps", "game")
-        self.assertTrue(FLATPAK_REQUIREMENTS <= set(identities(game.packages)))
-        self.assertFalse(AUR_REQUIREMENTS & set(identities(game.packages)))
+        for category in ("game", "games"):
+            with self.subTest(category=category):
+                _invocation, game = self.plan("apps", category)
+                self.assertTrue(FLATPAK_REQUIREMENTS <= set(identities(game.packages)))
+                self.assertFalse(AUR_REQUIREMENTS & set(identities(game.packages)))
         for category in ("media", "social", "vpn"):
             with self.subTest(category=category):
                 _invocation, plan = self.plan("apps", category)

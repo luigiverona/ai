@@ -44,8 +44,8 @@ def installer_fixture_template() -> str:
 
 class ReleaseToolTests(unittest.TestCase):
     def test_version_declarations_agree(self) -> None:
-        self.assertEqual(project_version(Path.cwd()), "2.0.1")
-        self.assertEqual(validate_release_contract(Path.cwd(), "v2.0.1"), "2.0.1")
+        self.assertEqual(project_version(Path.cwd()), "2.1.0")
+        self.assertEqual(validate_release_contract(Path.cwd(), "v2.1.0"), "2.1.0")
 
     def test_installer_security_markers_are_release_contract(self) -> None:
         template = Path("bootstrap/install.in").read_text(encoding="utf-8")
@@ -57,7 +57,7 @@ class ReleaseToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             (root / "pyproject.toml").write_text(
-                '[project]\nname = "other"\nversion = "2.0.1"\n', encoding="utf-8"
+                '[project]\nname = "other"\nversion = "2.1.0"\n', encoding="utf-8"
             )
             with self.assertRaisesRegex(ValueError, "project.name"):
                 project_version(root)
@@ -70,10 +70,10 @@ class ReleaseToolTests(unittest.TestCase):
         ):
             first_dir = Path(first_raw)
             second_dir = Path(second_raw)
-            first, first_digest = build(root, first_dir, "v2.0.1", allow_dirty=True)
-            second, second_digest = build(root, second_dir, "v2.0.1", allow_dirty=True)
+            first, first_digest = build(root, first_dir, "v2.1.0", allow_dirty=True)
+            second, second_digest = build(root, second_dir, "v2.1.0", allow_dirty=True)
             self.assertEqual(first_digest, second_digest)
-            for name in ("ai-2.0.1.tar.gz", "SHA256SUMS", "install"):
+            for name in ("ai-2.1.0.tar.gz", "SHA256SUMS", "install"):
                 self.assertEqual((first_dir / name).read_bytes(), (second_dir / name).read_bytes())
             validated = validate_archive(
                 root,
@@ -86,14 +86,14 @@ class ReleaseToolTests(unittest.TestCase):
             self.assertEqual((first_dir / "install").stat().st_mode & 0o777, 0o755)
             with tarfile.open(first, "r:gz") as bundle:
                 names = {member.name for member in bundle.getmembers()}
-            self.assertFalse(any(name.startswith("ai-2.0.1/tests/") for name in names))
-            self.assertFalse(any(name.startswith("ai-2.0.1/.github/") for name in names))
+            self.assertFalse(any(name.startswith("ai-2.1.0/tests/") for name in names))
+            self.assertFalse(any(name.startswith("ai-2.1.0/.github/") for name in names))
             self.assertFalse(any(name.endswith("/py.typed") for name in names))
 
     def test_sha256sums_covers_archive_and_installer_only(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             output = Path(raw)
-            archive, archive_digest = build(Path.cwd(), output, "v2.0.1", allow_dirty=True)
+            archive, archive_digest = build(Path.cwd(), output, "v2.1.0", allow_dirty=True)
             installer_digest = hashlib.sha256((output / "install").read_bytes()).hexdigest()
             self.assertEqual(
                 (output / "SHA256SUMS").read_text(encoding="ascii"),
@@ -158,9 +158,9 @@ class ReleaseToolTests(unittest.TestCase):
     def test_published_installer_has_literal_digest_and_no_checksum_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             output = Path(raw)
-            archive, digest = build(Path.cwd(), output, "v2.0.1", allow_dirty=True)
+            archive, digest = build(Path.cwd(), output, "v2.1.0", allow_dirty=True)
             installer = (output / "install").read_text(encoding="utf-8")
-            self.assertEqual(installer.count('readonly AI_WORKSTATION_VERSION="2.0.1"'), 1)
+            self.assertEqual(installer.count('readonly AI_WORKSTATION_VERSION="2.1.0"'), 1)
             self.assertEqual(installer.count(f'readonly EXPECTED_SHA256="{digest}"'), 1)
             self.assertNotIn("AI_WORKSTATION_RELEASE_SHA256", installer)
             self.assertNotIn(f"{archive.name}.sha256", installer)
@@ -188,13 +188,13 @@ class ReleaseToolTests(unittest.TestCase):
                     ),
                 ):
                     validate_installer(
-                        installer.replace(GITHUB_RELEASE_BASE, forbidden), "2.0.1", digest
+                        installer.replace(GITHUB_RELEASE_BASE, forbidden), "2.1.0", digest
                     )
 
     def test_public_installer_has_no_production_test_controls(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             output = Path(raw)
-            build(Path.cwd(), output, "v2.0.1", allow_dirty=True)
+            build(Path.cwd(), output, "v2.1.0", allow_dirty=True)
             installer = (output / "install").read_text(encoding="utf-8")
             for forbidden in (
                 "AI_WORKSTATION_INSTALLER_TESTING",
@@ -215,7 +215,7 @@ class ReleaseToolTests(unittest.TestCase):
             "digest = local_hasher.sha256().hexdigest()\n",
             'printf \'%s  %s\\n\' "$EXPECTED_SHA256" "$archive" | sha256sum -c -\n',
             "assets=(SHA256SUMS)\n",
-            'archive_url="https://example.test/ai-2.0.1.tar.gz"\ncurl "$archive_url"\n',
+            'archive_url="https://example.test/ai-2.1.0.tar.gz"\ncurl "$archive_url"\n',
         ):
             with self.subTest(content=content):
                 validate_network_checksum_policy(content)
@@ -223,8 +223,8 @@ class ReleaseToolTests(unittest.TestCase):
     def test_network_checksum_policy_rejects_remote_sidecars(self) -> None:
         fixtures = (
             "curl https://example.test/SHA256SUMS\n",
-            "curl https://github.com/luigiverona/ai/releases/download/v2.0.1/SHA256SUMS\n",
-            'archive_url="https://example.test/ai-2.0.1.tar.gz"\n'
+            "curl https://github.com/luigiverona/ai/releases/download/v2.1.0/SHA256SUMS\n",
+            'archive_url="https://example.test/ai-2.1.0.tar.gz"\n'
             'sidecar_url="${archive_url}.sha256"\n'
             'curl -o checksum "$sidecar_url"\n',
         )
@@ -239,9 +239,9 @@ class ReleaseToolTests(unittest.TestCase):
         root = Path.cwd()
         with tempfile.TemporaryDirectory() as assets_raw, tempfile.TemporaryDirectory() as site_raw:
             assets = Path(assets_raw)
-            build(root, assets, "v2.0.1", allow_dirty=True)
+            build(root, assets, "v2.1.0", allow_dirty=True)
             site = Path(site_raw) / "site"
-            build_site(root, assets, site, "v2.0.1", skip_runtime_validation=True)
+            build_site(root, assets, site, "v2.1.0", skip_runtime_validation=True)
             entries = {path.relative_to(site) for path in site.rglob("*")}
             self.assertEqual(entries, {Path("install")})
             self.assertFalse((site / "install").is_symlink())
@@ -255,7 +255,7 @@ class ReleaseToolTests(unittest.TestCase):
     def test_site_rejects_installer_hash_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as assets_raw, tempfile.TemporaryDirectory() as site_raw:
             assets = Path(assets_raw)
-            build(Path.cwd(), assets, "v2.0.1", allow_dirty=True)
+            build(Path.cwd(), assets, "v2.1.0", allow_dirty=True)
             installer = assets / "install"
             installer.write_text(
                 installer.read_text().replace(
@@ -269,7 +269,7 @@ class ReleaseToolTests(unittest.TestCase):
                     Path.cwd(),
                     assets,
                     Path(site_raw) / "site",
-                    "v2.0.1",
+                    "v2.1.0",
                     skip_runtime_validation=True,
                 )
 
@@ -281,7 +281,7 @@ class ReleaseToolTests(unittest.TestCase):
                 tempfile.TemporaryDirectory() as site_raw,
             ):
                 assets = Path(assets_raw)
-                build(Path.cwd(), assets, "v2.0.1", allow_dirty=True)
+                build(Path.cwd(), assets, "v2.1.0", allow_dirty=True)
                 if mutation == "missing":
                     (assets / "install").unlink()
                 else:
@@ -291,14 +291,14 @@ class ReleaseToolTests(unittest.TestCase):
                         Path.cwd(),
                         assets,
                         Path(site_raw) / "site",
-                        "v2.0.1",
+                        "v2.1.0",
                         skip_runtime_validation=True,
                     )
 
     def test_site_rejects_symlink_installer_output(self) -> None:
         with tempfile.TemporaryDirectory() as assets_raw, tempfile.TemporaryDirectory() as site_raw:
             assets = Path(assets_raw)
-            build(Path.cwd(), assets, "v2.0.1", allow_dirty=True)
+            build(Path.cwd(), assets, "v2.1.0", allow_dirty=True)
             original = Path(site_raw) / "original-install"
             (assets / "install").rename(original)
             (assets / "install").symlink_to(original)
@@ -307,23 +307,23 @@ class ReleaseToolTests(unittest.TestCase):
                     Path.cwd(),
                     assets,
                     Path(site_raw) / "site",
-                    "v2.0.1",
+                    "v2.1.0",
                     skip_runtime_validation=True,
                 )
 
     def test_site_rejects_invalid_archive_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as assets_raw, tempfile.TemporaryDirectory() as site_raw:
             assets = Path(assets_raw)
-            build(Path.cwd(), assets, "v2.0.1", allow_dirty=True)
+            build(Path.cwd(), assets, "v2.1.0", allow_dirty=True)
             sums = assets / "SHA256SUMS"
             lines = sums.read_text(encoding="ascii").splitlines()
-            sums.write_text("0" * 64 + "  ai-2.0.1.tar.gz\n" + lines[1] + "\n", encoding="ascii")
+            sums.write_text("0" * 64 + "  ai-2.1.0.tar.gz\n" + lines[1] + "\n", encoding="ascii")
             with self.assertRaises(subprocess.CalledProcessError):
                 build_site(
                     Path.cwd(),
                     assets,
                     Path(site_raw) / "site",
-                    "v2.0.1",
+                    "v2.1.0",
                     skip_runtime_validation=True,
                 )
 
@@ -382,7 +382,7 @@ class ReleaseToolTests(unittest.TestCase):
         root = Path.cwd()
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
-            archive = directory / "ai-2.0.1.tar.gz"
+            archive = directory / "ai-2.1.0.tar.gz"
             payload = io.BytesIO()
             epoch = int(
                 subprocess.run(
@@ -393,7 +393,7 @@ class ReleaseToolTests(unittest.TestCase):
                 ).stdout.strip()
             )
             with tarfile.open(fileobj=payload, mode="w", format=tarfile.USTAR_FORMAT) as bundle:
-                link = tarfile.TarInfo("ai-2.0.1/link")
+                link = tarfile.TarInfo("ai-2.1.0/link")
                 link.type = tarfile.SYMTYPE
                 link.linkname = "/etc/passwd"
                 link.mtime = epoch
@@ -405,7 +405,7 @@ class ReleaseToolTests(unittest.TestCase):
             digest = hashlib.sha256(archive.read_bytes()).hexdigest()
             template = directory / "install.in"
             template.write_text(installer_fixture_template(), encoding="utf-8")
-            build_installer(template, "2.0.1", archive, directory / "install")
+            build_installer(template, "2.1.0", archive, directory / "install")
             installer_digest = hashlib.sha256((directory / "install").read_bytes()).hexdigest()
             sums = directory / "SHA256SUMS"
             sums.write_text(

@@ -191,6 +191,7 @@ class ReadinessTests(unittest.TestCase):
                 {
                     "base-devel",
                     "codex",
+                    "com.valvesoftware.Steam",
                     "curl",
                     "discord",
                     "flatpak",
@@ -220,6 +221,7 @@ class ReadinessTests(unittest.TestCase):
                 {
                     "base-devel",
                     "codex",
+                    "com.valvesoftware.Steam",
                     "curl",
                     "discord",
                     "flatpak",

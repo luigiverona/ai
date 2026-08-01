@@ -53,7 +53,8 @@ Common options:
 - `--verbose` shows detailed operations with configured secret redaction.
 
 Application categories and their current contents come from the manifests under
-[`apps/`](apps/). Run `ai apps --help` to see the available categories.
+[`apps/`](apps/). Run `ai apps --help` to see the available categories; for example,
+`ai apps games --dry-run` previews the per-user Flatpak installation of Steam from Flathub.
 
 ## What it configures
 
@@ -104,7 +105,7 @@ ruff format --check .
 mypy src
 mypy tools
 bash -n bootstrap/install.in
-python tools/build_release.py --tag v2.0.1 --check-only
+python tools/build_release.py --tag v2.1.0 --check-only
 git diff --check
 ```
 

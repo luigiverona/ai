@@ -8,9 +8,12 @@ from unittest.mock import patch
 
 from ai_setup.catalog.loader import load_catalog
 from ai_setup.cli import InvocationKind, invocation_from_args, main, parser
-from ai_setup.models import Capability, Plan, Source
+from ai_setup.models import Capability, Plan, RunOptions, Source
 from ai_setup.planning.planner import build_plan
+from ai_setup.ui.terminal import Terminal
 from ai_setup.verification.checks import CheckResult
+from ai_setup.workflow import Workflow
+from tests.helpers import FakeRunner
 
 
 class CliPlanningTests(unittest.TestCase):
@@ -106,6 +109,37 @@ class CliPlanningTests(unittest.TestCase):
         self.assertIn(Capability.FLATPAK, game.prerequisites)
         self.assertIn(Capability.FLATHUB, game.prerequisites)
 
+    def test_games_focus_and_complete_plan_include_exact_steam_flatpak(self) -> None:
+        games = self.plan("apps", "games")
+        applications = tuple(package for package in games.packages if package.category == "games")
+        self.assertEqual(
+            tuple((package.name, package.source, package.identifier) for package in applications),
+            (("Steam", Source.FLATPAK, "com.valvesoftware.Steam"),),
+        )
+        self.assertIn(Capability.FLATPAK, games.prerequisites)
+        self.assertIn(Capability.FLATHUB, games.prerequisites)
+        complete = self.plan()
+        self.assertEqual(
+            sum(package.identifier == "com.valvesoftware.Steam" for package in complete.packages),
+            1,
+        )
+
+    def test_games_dry_run_renders_steam_without_mutation(self) -> None:
+        plan = self.plan("apps", "games", "--dry-run")
+        output: list[str] = []
+        runner = FakeRunner(dry_run=True)
+        workflow = Workflow(
+            plan,
+            RunOptions(dry_run=True),
+            Terminal(output=output.append),
+            runner=runner,  # type: ignore[arg-type]
+        )
+        workflow.progress.selected = workflow._selected_stages(plan.packages)
+        workflow._render_plan(plan.packages)
+        rendered = "\n".join(output)
+        self.assertIn("Steam from Flatpak.", rendered)
+        self.assertEqual(runner.commands, [])
+
     def test_plan_contains_only_runtime_consumed_state(self) -> None:
         self.assertEqual(
             [field.name for field in fields(Plan)],
@@ -191,4 +225,4 @@ class CliPlanningTests(unittest.TestCase):
         with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as caught:
             parser(self.catalog).parse_args(("--version",))
         self.assertEqual(caught.exception.code, 0)
-        self.assertEqual(output.getvalue(), "ai 2.0.1\n")
+        self.assertEqual(output.getvalue(), "ai 2.1.0\n")

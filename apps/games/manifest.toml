@@ -1,0 +1,4 @@
+[[package]]
+name = "Steam"
+identifier = "com.valvesoftware.Steam"
+source = "flatpak"

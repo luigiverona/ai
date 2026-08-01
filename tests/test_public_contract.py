@@ -56,14 +56,14 @@ class PublicContractTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "ai 2.0.1\n", ""))
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "ai 2.1.0\n", ""))
         self.assertEqual(project["project"]["name"], "ai-workstation")
         self.assertTrue((ROOT / "src/ai_setup").is_dir())
         self.assertFalse((ROOT / "src/ai").exists())
 
     def test_clean_break_identity_has_no_compatibility_surface(self) -> None:
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-        self.assertEqual(project["project"]["version"], "2.0.1")
+        self.assertEqual(project["project"]["version"], "2.1.0")
         self.assertEqual(
             project["project"]["urls"]["Repository"], "https://github.com/luigiverona/ai"
         )
@@ -81,6 +81,7 @@ class PublicContractTests(unittest.TestCase):
                 "v1.0.3.md",
                 "v2.0.0.md",
                 "v2.0.1.md",
+                "v2.1.0.md",
             ],
         )
 

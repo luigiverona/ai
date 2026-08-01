@@ -73,6 +73,7 @@ class InspectionNonMutationTests(unittest.TestCase):
         ("setup", "setup", "--dry-run"),
         ("apps", "apps", "--dry-run"),
         ("apps-browser", "apps", "browser", "--dry-run"),
+        ("apps-games", "apps", "games", "--dry-run"),
         ("git", "git", "--dry-run"),
         ("github", "github", "--dry-run"),
         ("ssh", "ssh", "--dry-run"),
