@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+repo=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+version=$(PYTHONPATH="$repo/src" python3 -c 'import ai; print(ai.__version__)')
+output=${1:?usage: tools/build-release OUTPUT_DIRECTORY}
+case "$output" in /*) ;; *) output="$PWD/$output" ;; esac
+mkdir -p "$output"
+stage=$(mktemp -d "${TMPDIR:-/tmp}/ai-release.XXXXXX")
+trap 'rm -rf -- "$stage"' EXIT HUP INT TERM
+mkdir "$stage/bin"
+mkdir "$stage/app"
+(cd "$repo/src" && find ai -type f -name '*.py' -print) | while IFS= read -r source; do
+    mkdir -p "$stage/app/$(dirname "$source")"
+    cp "$repo/src/$source" "$stage/app/$source"
+done
+printf '%s\n' 'from ai.cli import main' 'raise SystemExit(main())' > "$stage/app/__main__.py"
+TZ=UTC find "$stage/app" -exec touch -d '@315532800' {} +
+python3 - "$stage/app" "$stage/app.zip" <<'PY'
+import pathlib
+import sys
+import zipfile
+
+source, target = map(pathlib.Path, sys.argv[1:])
+with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED) as archive:
+    for path in sorted(source.rglob("*"), key=lambda item: item.relative_to(source).as_posix()):
+        name = path.relative_to(source).as_posix() + ("/" if path.is_dir() else "")
+        info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+        info.create_system = 3
+        info.external_attr = ((0o40755 if path.is_dir() else 0o100644) << 16)
+        archive.writestr(info, b"" if path.is_dir() else path.read_bytes())
+PY
+python3 -m zipapp "$stage/app.zip" --python '/usr/bin/python3' --output "$stage/bin/ai"
+chmod 755 "$stage/bin/ai"
+archive="$output/ai-$version.tar.gz"
+tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf - -C "$stage" bin | gzip -n > "$archive"
+(cd "$output" && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
+printf '%s\n' "$archive"

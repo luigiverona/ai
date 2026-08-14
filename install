@@ -1,0 +1,145 @@
+#!/bin/sh
+set -eu
+
+AI_VERSION=${AI_VERSION:-0.1.1}
+AI_RELEASE_BASE=${AI_RELEASE_BASE:-https://ai.luigiverona.dev/releases}
+AI_HOME=${HOME:?HOME is required}
+AI_ROOT="$AI_HOME/.local/share/ai"
+AI_RELEASES="$AI_ROOT/releases"
+AI_ACTIVE="$AI_ROOT/current"
+AI_BIN="$AI_HOME/.local/bin"
+AI_LAUNCHER="$AI_BIN/ai"
+
+fail() { printf 'ai installer: %s\n' "$*" >&2; exit 1; }
+safe_directory() {
+    [ ! -e "$1" ] && [ ! -L "$1" ] && return 0
+    [ -d "$1" ] && [ ! -L "$1" ] || fail "unsafe installation directory: $1"
+    [ "$(stat -c %u "$1")" = "$(id -u)" ] || fail "installation directory is not user-owned: $1"
+}
+cleanup_releases() {
+    [ -d "$AI_RELEASES" ] || return 0
+    for old in "$AI_RELEASES"/*; do
+        [ -e "$old" ] || continue
+        [ "$old" = "$target" ] && continue
+        [ -d "$old" ] && [ ! -L "$old" ] && [ -x "$old/bin/ai" ] || \
+            fail "refusing to remove unrecognized release state: $old"
+        old_version=$("$old/bin/ai" --version 2>/dev/null | head -n 1)
+        [ "$old_version" = "ai $(basename "$old")" ] || \
+            fail "refusing to remove unrecognized release state: $old"
+        rm -rf -- "$old"
+    done
+}
+[ "$(uname -s)" = Linux ] || fail 'Linux is required'
+[ "$(uname -m)" = x86_64 ] || fail 'x86-64 is required'
+[ "$(id -u)" -ne 0 ] || fail 'run as a normal non-root user'
+command -v curl >/dev/null || fail 'curl is required'
+command -v sha256sum >/dev/null || fail 'sha256sum is required'
+command -v python3 >/dev/null || fail 'Python 3 is required'
+command -v stat >/dev/null || fail 'stat is required'
+
+case "$AI_VERSION" in *[!A-Za-z0-9._-]*|'') fail 'invalid version' ;; esac
+target="$AI_RELEASES/$AI_VERSION"
+safe_directory "$AI_HOME"
+safe_directory "$AI_HOME/.local"
+safe_directory "$AI_HOME/.local/share"
+safe_directory "$AI_ROOT"
+safe_directory "$AI_RELEASES"
+safe_directory "$AI_BIN"
+if [ -e "$AI_ACTIVE" ] && [ ! -L "$AI_ACTIVE" ]; then
+    fail "unsafe active installation path: $AI_ACTIVE"
+fi
+if [ -L "$AI_ACTIVE" ]; then
+    case "$(readlink "$AI_ACTIVE")" in releases/*) ;; *) fail "unsafe active installation link: $AI_ACTIVE" ;; esac
+fi
+if [ -e "$AI_LAUNCHER" ] && [ ! -L "$AI_LAUNCHER" ]; then
+    fail "unsafe launcher path: $AI_LAUNCHER"
+fi
+if [ -L "$AI_LAUNCHER" ] && [ "$(readlink "$AI_LAUNCHER")" != "$AI_ACTIVE/bin/ai" ]; then
+    fail "unsafe launcher link: $AI_LAUNCHER"
+fi
+installed_version=$({ "$AI_LAUNCHER" --version 2>/dev/null || true; } | head -n 1)
+if [ -L "$AI_ACTIVE" ] && [ "$(readlink "$AI_ACTIVE")" = "releases/$AI_VERSION" ] && \
+   [ -L "$AI_LAUNCHER" ] && [ "$(readlink "$AI_LAUNCHER")" = "$AI_ACTIVE/bin/ai" ] && \
+   [ -x "$target/bin/ai" ] && [ "$installed_version" = "ai $AI_VERSION" ]; then
+    cleanup_releases
+    printf 'ai %s is already installed.\n' "$AI_VERSION"
+    exit 0
+fi
+
+umask 077
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/ai-install.XXXXXX")
+cleanup() { rm -rf -- "$tmp"; }
+trap cleanup EXIT HUP INT TERM
+archive="$tmp/ai.tar.gz"
+base="$AI_RELEASE_BASE/$AI_VERSION"
+curl -fsSL "$base/ai-$AI_VERSION.tar.gz" -o "$archive"
+curl -fsSL "$base/ai-$AI_VERSION.tar.gz.sha256" -o "$archive.sha256"
+expected=$(awk 'NR == 1 { print $1 }' "$archive.sha256")
+case "$expected" in *[!0-9a-fA-F]*|'') fail 'invalid checksum file' ;; esac
+[ "${#expected}" -eq 64 ] || fail 'invalid checksum file'
+actual=$(sha256sum "$archive" | awk '{ print $1 }')
+[ "$actual" = "$expected" ] || fail 'checksum verification failed'
+mkdir "$tmp/extract"
+python3 - "$archive" "$tmp/extract" <<'PY' || fail 'unsafe or invalid release archive'
+import os
+import pathlib
+import shutil
+import sys
+import tarfile
+
+archive, destination = sys.argv[1:]
+seen = set()
+total = 0
+with tarfile.open(archive, "r:gz") as source:
+    members = source.getmembers()
+    if len(members) > 1000:
+        raise ValueError("too many archive members")
+    for member in members:
+        path = pathlib.PurePosixPath(member.name)
+        if path.is_absolute() or not path.parts or ".." in path.parts or member.name in seen:
+            raise ValueError("unsafe archive path")
+        if not (member.isdir() or member.isreg()):
+            raise ValueError("unsupported archive member")
+        seen.add(member.name)
+        total += member.size
+        if total > 100 * 1024 * 1024:
+            raise ValueError("archive is too large")
+    root = pathlib.Path(destination)
+    for member in members:
+        target = root.joinpath(*pathlib.PurePosixPath(member.name).parts)
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        extracted = source.extractfile(member)
+        if extracted is None:
+            raise ValueError("missing archive data")
+        with target.open("xb") as output:
+            shutil.copyfileobj(extracted, output)
+        os.chmod(target, member.mode & 0o777)
+PY
+[ -x "$tmp/extract/bin/ai" ] || fail 'archive does not contain bin/ai'
+[ "$("$tmp/extract/bin/ai" --version 2>/dev/null | head -n 1)" = "ai $AI_VERSION" ] || \
+    fail 'staged ai version does not match release'
+
+mkdir -p "$AI_RELEASES" "$AI_BIN"
+if [ -e "$target" ] || [ -L "$target" ]; then
+    if [ -d "$target" ] && [ ! -L "$target" ] && [ -x "$target/bin/ai" ] && \
+       [ "$("$target/bin/ai" --version 2>/dev/null | head -n 1)" = "ai $AI_VERSION" ]; then
+        rm -rf -- "$tmp/extract"
+    else
+        fail "unsafe existing release path: $target"
+    fi
+else
+    mv "$tmp/extract" "$target"
+fi
+newlink="$AI_ROOT/.current.$$"
+ln -s "releases/$AI_VERSION" "$newlink"
+mv -Tf "$newlink" "$AI_ACTIVE"
+newlauncher="$AI_BIN/.ai.$$"
+ln -s "$AI_ACTIVE/bin/ai" "$newlauncher"
+mv -Tf "$newlauncher" "$AI_LAUNCHER"
+"$AI_LAUNCHER" --version >/dev/null 2>&1 || fail 'installed ai does not execute'
+
+cleanup_releases
+printf 'Installed ai %s. Run ai when ready.\n' "$AI_VERSION"
